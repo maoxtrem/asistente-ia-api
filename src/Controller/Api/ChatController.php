@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
+use App\Service\AssistantResponder;
 use App\Service\QdrantClient;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -13,6 +14,7 @@ final class ChatController
 {
     public function __construct(
         private readonly QdrantClient $qdrantClient,
+        private readonly AssistantResponder $assistantResponder,
         private readonly string $assistantName,
     ) {
     }
@@ -40,17 +42,21 @@ final class ChatController
         }
 
         $qdrantHealth = $this->qdrantClient->health();
+        $assistantReply = $this->assistantResponder->respond(
+            message: $message,
+            context: is_array($payload['context'] ?? null) ? $payload['context'] : [],
+            qdrantHealth: $qdrantHealth,
+        );
 
         return new JsonResponse([
             'status' => 'success',
             'data' => [
-                'message' => sprintf(
-                    'Recibi tu mensaje: "%s". Qdrant esta %s y este endpoint ya esta listo para conectar la logica del asistente.',
-                    $message,
-                    $qdrantHealth['ok'] ? 'disponible' : 'no disponible'
-                ),
+                'message' => $assistantReply['message'],
                 'conversation_id' => $conversationId !== '' ? $conversationId : bin2hex(random_bytes(8)),
                 'assistant' => $this->assistantName,
+                'links' => $assistantReply['links'],
+                'intent' => $assistantReply['intent'],
+                'context_note' => $assistantReply['context_note'],
                 'qdrant' => $qdrantHealth,
             ],
         ]);
