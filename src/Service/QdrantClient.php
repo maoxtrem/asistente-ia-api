@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use RuntimeException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -33,5 +34,123 @@ final class QdrantClient
                 'error' => $exception->getMessage(),
             ];
         }
+    }
+
+    public function ensureCollection(string $collectionName, int $vectorSize): void
+    {
+        try {
+            $this->httpClient->request('PUT', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collectionName), [
+                'json' => [
+                    'vectors' => [
+                        'size' => $vectorSize,
+                        'distance' => 'Cosine',
+                    ],
+                ],
+            ])->getStatusCode();
+        } catch (ExceptionInterface $exception) {
+            throw new RuntimeException(sprintf('No fue posible preparar la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
+        }
+    }
+
+    /**
+     * @param float[] $vector
+     */
+    public function upsertPoint(string $collection, string $pointId, array $vector, array $payload): array
+    {
+        try {
+            $response = $this->httpClient->request('PUT', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points', [
+                'json' => [
+                    'points' => [
+                        [
+                            'id' => $pointId,
+                            'vector' => $vector,
+                            'payload' => $payload,
+                        ],
+                    ],
+                ],
+            ]);
+
+            return $response->toArray(false);
+        } catch (ExceptionInterface $exception) {
+            throw new RuntimeException(sprintf('No fue posible guardar el punto vectorial: %s', $exception->getMessage()), 0, $exception);
+        }
+    }
+
+    public function deletePoint(string $collection, string $pointId): void
+    {
+        try {
+            $this->httpClient->request('POST', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points/delete', [
+                'json' => [
+                    'points' => [$pointId],
+                ],
+            ])->getStatusCode();
+        } catch (ExceptionInterface $exception) {
+            throw new RuntimeException(sprintf('No fue posible eliminar el punto vectorial: %s', $exception->getMessage()), 0, $exception);
+        }
+    }
+
+    /**
+     * @param float[] $vector
+     * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
+     */
+    public function searchPoints(string $collection, array $vector, int $limit = 5, ?string $tenant = null): array
+    {
+        $json = [
+            'vector' => array_values($vector),
+            'limit' => max(1, $limit),
+            'with_payload' => true,
+            'with_vector' => false,
+        ];
+
+        $tenant = trim((string) ($tenant ?? ''));
+        if ($tenant !== '') {
+            $json['filter'] = [
+                'must' => [
+                    [
+                        'key' => 'tenant',
+                        'match' => [
+                            'value' => $tenant,
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        try {
+            $response = $this->httpClient->request('POST', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points/search', [
+                'json' => $json,
+            ]);
+
+            $payload = $response->toArray(false);
+        } catch (ExceptionInterface $exception) {
+            throw new RuntimeException(sprintf('No fue posible consultar la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
+        }
+
+        $results = $payload['result'] ?? [];
+        if (!is_array($results)) {
+            return [];
+        }
+
+        return array_values(array_map(static function (array $item): array {
+            return [
+                'id' => (string) ($item['id'] ?? ''),
+                'score' => (float) ($item['score'] ?? 0.0),
+                'payload' => is_array($item['payload'] ?? null) ? $item['payload'] : [],
+            ];
+        }, $results));
+    }
+
+    public function stablePointId(string $seed): string
+    {
+        $hash = sha1($seed);
+
+        return sprintf(
+            '%s-%s-%s-%s-%s',
+            substr($hash, 0, 8),
+            substr($hash, 8, 4),
+            sprintf('%04x', (hexdec(substr($hash, 12, 4)) & 0x0fff) | 0x5000),
+            sprintf('%04x', (hexdec(substr($hash, 16, 4)) & 0x3fff) | 0x8000),
+            substr($hash, 20, 12)
+        );
     }
 }

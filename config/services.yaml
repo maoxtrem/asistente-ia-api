@@ -9,6 +9,11 @@
 parameters:
     app.assistant_name: '%env(string:ASSISTANT_NAME)%'
     app.qdrant_url: '%env(string:QDRANT_URL)%'
+    app.qdrant_collection: '%env(string:QDRANT_COLLECTION)%'
+    app.ollama_url: '%env(string:OLLAMA_URL)%'
+    app.ollama_embedding_model: '%env(string:OLLAMA_EMBEDDING_MODEL)%'
+    app.ollama_chat_model: '%env(string:OLLAMA_CHAT_MODEL)%'
+    app.ollama_chat_timeout: '%env(float:OLLAMA_CHAT_TIMEOUT)%'
 
 services:
     # default configuration for services in *this* file
@@ -24,6 +29,27 @@ services:
     App\Service\QdrantClient:
         arguments:
             $qdrantUrl: '%app.qdrant_url%'
+
+    App\Service\EmbeddingClient:
+        arguments:
+            $ollamaUrl: '%app.ollama_url%'
+            $embeddingModel: '%app.ollama_embedding_model%'
+
+    App\Service\VectorContextRetriever:
+        arguments:
+            $qdrantCollection: '%app.qdrant_collection%'
+
+    App\Service\OllamaChatClient:
+        arguments:
+            $ollamaUrl: '%app.ollama_url%'
+            $chatModel: '%app.ollama_chat_model%'
+            $timeout: '%app.ollama_chat_timeout%'
+
+    App\Contract\ChatProviderInterface: '@App\Service\OllamaChatClient'
+
+    App\Service\IndexDocumentProcessor:
+        arguments:
+            $qdrantCollection: '%app.qdrant_collection%'
 
     App\Controller\Api\ChatController:
         arguments:

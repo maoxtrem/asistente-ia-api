@@ -6,6 +6,8 @@ namespace App\Controller\Api;
 
 use App\Service\AssistantResponder;
 use App\Service\QdrantClient;
+use RuntimeException;
+use Throwable;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -33,6 +35,7 @@ final class ChatController
 
         $message = trim((string) ($payload['message'] ?? ''));
         $conversationId = trim((string) ($payload['conversation_id'] ?? ''));
+        $tenant = trim((string) ($payload['tenant'] ?? ''));
 
         if ($message === '') {
             return new JsonResponse([
@@ -42,11 +45,28 @@ final class ChatController
         }
 
         $qdrantHealth = $this->qdrantClient->health();
-        $assistantReply = $this->assistantResponder->respond(
-            message: $message,
-            context: is_array($payload['context'] ?? null) ? $payload['context'] : [],
-            qdrantHealth: $qdrantHealth,
-        );
+
+        try {
+            $assistantReply = $this->assistantResponder->respond(
+                message: $message,
+                context: is_array($payload['context'] ?? null) ? $payload['context'] : [],
+                tenant: $tenant,
+                qdrantHealth: $qdrantHealth,
+            );
+        } catch (RuntimeException $exception) {
+            return new JsonResponse([
+                'status' => 'error',
+                'message' => $exception->getMessage(),
+            ], JsonResponse::HTTP_BAD_GATEWAY);
+        } catch (Throwable $exception) {
+            return new JsonResponse([
+                'status' => 'error',
+                'message' => 'No fue posible generar la respuesta del asistente.',
+                'raw' => [
+                    'error' => $exception->getMessage(),
+                ],
+            ], JsonResponse::HTTP_BAD_GATEWAY);
+        }
 
         return new JsonResponse([
             'status' => 'success',
@@ -54,9 +74,11 @@ final class ChatController
                 'message' => $assistantReply['message'],
                 'conversation_id' => $conversationId !== '' ? $conversationId : bin2hex(random_bytes(8)),
                 'assistant' => $this->assistantName,
+                'tenant' => $tenant,
                 'links' => $assistantReply['links'],
                 'intent' => $assistantReply['intent'],
                 'context_note' => $assistantReply['context_note'],
+                'sources' => $assistantReply['sources'],
                 'qdrant' => $qdrantHealth,
             ],
         ]);
