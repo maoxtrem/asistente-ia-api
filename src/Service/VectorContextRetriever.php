@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Contract\EmbeddingProviderInterface;
 use RuntimeException;
 
 final class VectorContextRetriever
 {
     public function __construct(
-        private readonly EmbeddingClient $embeddingClient,
+        private readonly EmbeddingProviderInterface $embeddingClient,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
     ) {
@@ -36,7 +37,7 @@ final class VectorContextRetriever
     {
         try {
             $vector = $this->embeddingClient->embed($message);
-            $matches = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, $tenant);
+            $matches = $this->searchAcrossTenants($vector, $tenant, $limit);
         } catch (RuntimeException $exception) {
             return [
                 'ok' => false,
@@ -65,5 +66,70 @@ final class VectorContextRetriever
                 ];
             }, $matches),
         ];
+    }
+
+    /**
+     * @param float[] $vector
+     * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
+     */
+    private function searchAcrossTenants(array $vector, ?string $tenant, int $limit): array
+    {
+        $tenant = trim((string) ($tenant ?? ''));
+        $tenants = [];
+
+        if ($tenant !== '') {
+            $tenants[] = $tenant;
+        }
+
+        if ($tenant !== 'global') {
+            $tenants[] = 'global';
+        }
+
+        if ($tenants === []) {
+            return $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, null);
+        }
+
+        $merged = [];
+        foreach ($tenants as $searchTenant) {
+            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, $searchTenant);
+
+            foreach ($results as $result) {
+                $dedupeKey = $this->matchKey($result);
+                if ($dedupeKey === '') {
+                    continue;
+                }
+
+                if (!isset($merged[$dedupeKey])) {
+                    $merged[$dedupeKey] = $result;
+                    continue;
+                }
+
+                if ($result['score'] > $merged[$dedupeKey]['score']) {
+                    $merged[$dedupeKey] = $result;
+                }
+            }
+        }
+
+        $matches = array_values($merged);
+        usort($matches, static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
+
+        return array_slice($matches, 0, max(1, $limit));
+    }
+
+    /**
+     * @param array{id:string, score:float, payload:array<string, mixed>} $match
+     */
+    private function matchKey(array $match): string
+    {
+        $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
+        $indexKey = trim((string) ($payload['index_key'] ?? ''));
+
+        if ($indexKey !== '') {
+            return $indexKey;
+        }
+
+        $id = trim((string) ($match['id'] ?? ''));
+
+        return $id;
     }
 }

@@ -13,6 +13,8 @@ interface ChatProviderInterface
         string $message,
         array $context,
         string $tenant,
+        string $locale,
+        array $history,
         array $vectorContext,
         array $qdrantHealth,
         string $extraInstruction = ''

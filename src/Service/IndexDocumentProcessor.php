@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Contract\EmbeddingProviderInterface;
 use App\DTO\IndexDocument;
 use App\DTO\IndexDocumentResponse;
 use RuntimeException;
@@ -11,7 +12,7 @@ use RuntimeException;
 final class IndexDocumentProcessor
 {
     public function __construct(
-        private readonly EmbeddingClient $embeddingClient,
+        private readonly EmbeddingProviderInterface $embeddingClient,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
     ) {
