@@ -2,62 +2,11 @@
 
 declare(strict_types=1);
 
-namespace App\Service;
+namespace App\Service\Ai\Chat;
 
-use App\Contract\ChatProviderInterface;
-use RuntimeException;
-use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
-use Symfony\Contracts\HttpClient\HttpClientInterface;
-
-final class RemoteChatClient implements ChatProviderInterface
+final class ChatPromptBuilder
 {
-    public function __construct(
-        private readonly HttpClientInterface $httpClient,
-        private readonly string $providerUrl,
-        private readonly string $chatModel,
-        private readonly float $timeout,
-    ) {
-    }
-
-    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = ''): array
-    {
-        try {
-            $response = $this->httpClient->request('POST', rtrim($this->providerUrl, '/') . '/api/chat', [
-                'json' => [
-                    'model' => $this->chatModel,
-                    'stream' => false,
-                    'messages' => [
-                        [
-                            'role' => 'system',
-                            'content' => $this->buildSystemPrompt($locale),
-                        ],
-                        [
-                            'role' => 'user',
-                            'content' => $this->buildUserPrompt($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction),
-                        ],
-                    ],
-                ],
-                'timeout' => $this->timeout,
-                'max_connect_duration' => 5,
-            ]);
-
-            $payload = $response->toArray(false);
-        } catch (ExceptionInterface $exception) {
-            throw new RuntimeException(sprintf('No fue posible consultar el servicio de chat: %s', $exception->getMessage()), 0, $exception);
-        }
-
-        $content = trim((string) ($payload['message']['content'] ?? ''));
-        if ($content === '') {
-            throw new RuntimeException('El servicio de chat no devolvio contenido util.');
-        }
-
-        return [
-            'content' => $content,
-            'raw' => $payload,
-        ];
-    }
-
-    private function buildSystemPrompt(string $locale): string
+    public function buildSystemPrompt(string $locale): string
     {
         return <<<'PROMPT'
 You are an assistant for a business system.
@@ -70,7 +19,7 @@ If the user's language is unclear, use the application locale provided in the co
 PROMPT;
     }
 
-    private function buildUserPrompt(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction): string
+    public function buildUserPrompt(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction): string
     {
         $contextPath = trim((string) ($context['pathname'] ?? ''));
 

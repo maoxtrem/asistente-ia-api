@@ -140,6 +140,72 @@ final class QdrantClient
         }, $results));
     }
 
+    /**
+     * @return array{
+     *   points: array<int, array{id:string, payload:array<string, mixed>}>,
+     *   next_page_offset: int|string|null
+     * }
+     */
+    public function scrollPoints(string $collection, int $limit = 50, int|string|null $offset = null, ?string $tenant = null): array
+    {
+        $json = [
+            'limit' => max(1, $limit),
+            'with_payload' => true,
+            'with_vector' => false,
+        ];
+
+        if ($offset !== null) {
+            $json['offset'] = $offset;
+        }
+
+        $tenant = trim((string) ($tenant ?? ''));
+        if ($tenant !== '') {
+            $json['filter'] = [
+                'must' => [
+                    [
+                        'key' => 'tenant',
+                        'match' => [
+                            'value' => $tenant,
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        try {
+            $response = $this->httpClient->request('POST', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points/scroll', [
+                'json' => $json,
+            ]);
+
+            $payload = $response->toArray(false);
+        } catch (ExceptionInterface $exception) {
+            throw new RuntimeException(sprintf('No fue posible recorrer la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
+        }
+
+        $result = $payload['result'] ?? [];
+        if (!is_array($result)) {
+            return [
+                'points' => [],
+                'next_page_offset' => null,
+            ];
+        }
+
+        $points = $result['points'] ?? [];
+        if (!is_array($points)) {
+            $points = [];
+        }
+
+        return [
+            'points' => array_values(array_map(static function (array $item): array {
+                return [
+                    'id' => (string) ($item['id'] ?? ''),
+                    'payload' => is_array($item['payload'] ?? null) ? $item['payload'] : [],
+                ];
+            }, $points)),
+            'next_page_offset' => $result['next_page_offset'] ?? null,
+        ];
+    }
+
     public function stablePointId(string $seed): string
     {
         $hash = sha1($seed);

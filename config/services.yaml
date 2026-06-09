@@ -16,6 +16,10 @@ parameters:
     app.chat_provider_url: '%env(string:CHAT_PROVIDER_URL)%'
     app.chat_model: '%env(string:CHAT_MODEL)%'
     app.chat_timeout: '%env(float:CHAT_TIMEOUT)%'
+    app.chat_provider_kind: '%env(string:CHAT_PROVIDER_KIND)%'
+    app.embedding_provider_kind: '%env(string:EMBEDDING_PROVIDER_KIND)%'
+    app.chat_api_key: '%env(string:CHAT_API_KEY)%'
+    app.embedding_api_key: '%env(string:EMBEDDING_API_KEY)%'
 
 services:
     # default configuration for services in *this* file
@@ -32,24 +36,54 @@ services:
         arguments:
             $qdrantUrl: '%app.qdrant_url%'
 
-    App\Service\EmbeddingClient:
-        arguments:
-            $providerUrl: '%app.embedding_provider_url%'
-            $embeddingModel: '%app.embedding_model%'
+    App\Service\Ai\Chat\ChatPromptBuilder:
+        arguments: []
 
-    App\Contract\EmbeddingProviderInterface: '@App\Service\EmbeddingClient'
-
-    App\Service\VectorContextRetriever:
-        arguments:
-            $qdrantCollection: '%app.qdrant_collection%'
-
-    App\Service\RemoteChatClient:
+    App\Service\Ai\Chat\LocalJsonChatProvider:
         arguments:
             $providerUrl: '%app.chat_provider_url%'
             $chatModel: '%app.chat_model%'
             $timeout: '%app.chat_timeout%'
+        tags: ['app.chat_provider']
 
-    App\Contract\ChatProviderInterface: '@App\Service\RemoteChatClient'
+    App\Service\Ai\Chat\OpenAiCompatibleChatProvider:
+        arguments:
+            $providerUrl: '%app.chat_provider_url%'
+            $chatModel: '%app.chat_model%'
+            $timeout: '%app.chat_timeout%'
+            $apiKey: '%app.chat_api_key%'
+        tags: ['app.chat_provider']
+
+    App\Service\Ai\Chat\ChatProviderSelector:
+        arguments:
+            $providerKind: '%app.chat_provider_kind%'
+            $providers: !tagged_iterator app.chat_provider
+
+    App\Contract\ChatProviderInterface: '@App\Service\Ai\Chat\ChatProviderSelector'
+
+    App\Service\Ai\Embedding\LocalJsonEmbeddingProvider:
+        arguments:
+            $providerUrl: '%app.embedding_provider_url%'
+            $embeddingModel: '%app.embedding_model%'
+        tags: ['app.embedding_provider']
+
+    App\Service\Ai\Embedding\OpenAiCompatibleEmbeddingProvider:
+        arguments:
+            $providerUrl: '%app.embedding_provider_url%'
+            $embeddingModel: '%app.embedding_model%'
+            $apiKey: '%app.embedding_api_key%'
+        tags: ['app.embedding_provider']
+
+    App\Service\Ai\Embedding\EmbeddingProviderSelector:
+        arguments:
+            $providerKind: '%app.embedding_provider_kind%'
+            $providers: !tagged_iterator app.embedding_provider
+
+    App\Contract\EmbeddingProviderInterface: '@App\Service\Ai\Embedding\EmbeddingProviderSelector'
+
+    App\Service\VectorContextRetriever:
+        arguments:
+            $qdrantCollection: '%app.qdrant_collection%'
 
     App\Service\IndexDocumentProcessor:
         arguments:
@@ -66,6 +100,10 @@ services:
     App\Controller\Api\HealthController:
         arguments:
             $assistantName: '%app.assistant_name%'
+
+    App\Command\ReindexQdrantCollectionCommand:
+        arguments:
+            $qdrantCollection: '%app.qdrant_collection%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
