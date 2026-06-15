@@ -4,22 +4,20 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\DTO\IndexDocument;
-use App\Service\IndexDocumentProcessor;
-use RuntimeException;
-use Throwable;
+use App\DTO\FeedbackRequest;
+use App\Service\FeedbackLearningService;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
 
-final class IndexController
+final class FeedbackController
 {
     public function __construct(
-        private readonly IndexDocumentProcessor $indexDocumentProcessor,
+        private readonly FeedbackLearningService $feedbackLearningService,
     ) {
     }
 
-    #[Route('/api/index/documents', name: 'api_index_documents', methods: ['POST'])]
+    #[Route('/api/feedback', name: 'api_feedback', methods: ['POST'])]
     public function __invoke(Request $request): JsonResponse
     {
         $payload = json_decode($request->getContent(), true);
@@ -31,28 +29,28 @@ final class IndexController
             ], JsonResponse::HTTP_BAD_REQUEST);
         }
 
-        $document = IndexDocument::fromArray($payload);
+        $feedback = FeedbackRequest::fromArray($payload);
 
-        try {
-            $response = $this->indexDocumentProcessor->process($document);
-        } catch (RuntimeException $exception) {
+        if ($feedback->question === '' || $feedback->answer === '') {
             return new JsonResponse([
                 'status' => 'error',
-                'message' => $exception->getMessage(),
+                'message' => 'question and answer are required.',
             ], JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
-        } catch (Throwable $exception) {
+        }
+
+        $tenant = trim($feedback->tenant);
+        if ($tenant === '') {
             return new JsonResponse([
                 'status' => 'error',
-                'message' => 'No fue posible procesar el documento de indexacion.',
-                'raw' => [
-                    'error' => $exception->getMessage(),
-                ],
-            ], JsonResponse::HTTP_BAD_GATEWAY);
+                'message' => 'tenant is required.',
+            ], JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
         }
+
+        $result = $this->feedbackLearningService->record($feedback);
 
         return new JsonResponse([
             'status' => 'success',
-            'data' => $response->toArray(),
+            'data' => $result,
         ]);
     }
 }
