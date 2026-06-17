@@ -44,7 +44,7 @@ final class AssistantResponder
             ];
         }
 
-        $vectorContext = $this->vectorContextRetriever->retrieve($message, $tenant);
+        $vectorContext = $this->vectorContextRetriever->retrieve($message, $tenant, 2);
 
         if (($vectorContext['ok'] ?? false) !== true || ($vectorContext['matches'] ?? []) === []) {
             $aiMessage = $this->resolveClarificationMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth);

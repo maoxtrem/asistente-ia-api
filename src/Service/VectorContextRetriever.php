@@ -33,7 +33,7 @@ final class VectorContextRetriever
      *   error?: string
      * }
      */
-    public function retrieve(string $message, ?string $tenant = null, int $limit = 5): array
+    public function retrieve(string $message, ?string $tenant = null, int $limit = 3): array
     {
         try {
             $vector = $this->embeddingClient->embed($message);
@@ -53,12 +53,16 @@ final class VectorContextRetriever
             'tenant' => trim((string) ($tenant ?? '')),
             'matches' => array_map(static function (array $match): array {
                 $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
+                $indexedText = trim((string) ($payload['indexed_text'] ?? $payload['content'] ?? ''));
+                if ($indexedText !== '' && mb_strlen($indexedText) > 500) {
+                    $indexedText = mb_substr($indexedText, 0, 500) . '…';
+                }
 
                 return [
                     'id' => (string) ($match['id'] ?? ''),
                     'score' => (float) ($match['score'] ?? 0.0),
                     'title' => trim((string) ($payload['title'] ?? '')),
-                    'content' => trim((string) ($payload['indexed_text'] ?? $payload['content'] ?? '')),
+                    'content' => $indexedText,
                     'source' => trim((string) ($payload['source'] ?? '')),
                     'type' => trim((string) ($payload['type'] ?? '')),
                     'tenant' => trim((string) ($payload['tenant'] ?? '')),
@@ -89,9 +93,10 @@ final class VectorContextRetriever
             return $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, null);
         }
 
+        $perTenantLimit = max(1, (int) ceil($limit / max(1, count($tenants))));
         $merged = [];
         foreach ($tenants as $searchTenant) {
-            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, $searchTenant);
+            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $perTenantLimit, $searchTenant);
 
             foreach ($results as $result) {
                 $dedupeKey = $this->matchKey($result);

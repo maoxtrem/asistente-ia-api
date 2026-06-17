@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Contract\ChatProviderInterface;
+use App\DTO\FeedbackAnalysisPromptInput;
 use App\DTO\FeedbackRequest;
 use App\DTO\IndexDocument;
-use RuntimeException;
+use App\Service\Ai\Chat\FeedbackAnalysisPromptBuilder;
 use Throwable;
 
 final class FeedbackLearningService
@@ -17,6 +18,7 @@ final class FeedbackLearningService
     public function __construct(
         private readonly ChatHistoryRepository $chatHistoryRepository,
         private readonly ChatProviderInterface $chatProvider,
+        private readonly FeedbackAnalysisPromptBuilder $feedbackPromptBuilder,
         private readonly IndexDocumentProcessor $indexDocumentProcessor,
     ) {
     }
@@ -27,6 +29,12 @@ final class FeedbackLearningService
     public function record(FeedbackRequest $feedback): array
     {
         $conversationId = trim((string) ($feedback->conversationId ?? ''));
+        $clientKey = trim((string) ($feedback->clientKey ?? ''));
+
+        if ($conversationId === '' && $clientKey !== '') {
+            $conversationId = $this->chatHistoryRepository->conversationIdFromClientKey($feedback->tenant, $clientKey);
+        }
+
         if ($conversationId === '') {
             $conversationId = md5(implode('|', [
                 $feedback->tenant,
@@ -39,6 +47,7 @@ final class FeedbackLearningService
         $metadata = array_filter([
             'conversation_id' => $feedback->conversationId,
             'conversation_id_normalized' => $conversationId,
+            'client_key' => $clientKey !== '' ? $clientKey : null,
             'helpful' => $feedback->helpful,
             'locale' => $feedback->locale,
             'context' => $feedback->context,
@@ -161,38 +170,27 @@ final class FeedbackLearningService
             'response_locale' => $feedback->locale,
         ];
 
-        $analysisRequest = [
-            'task' => 'knowledge_extraction',
-            'tenant' => $feedback->tenant,
-            'locale' => $feedback->locale,
-            'question' => $feedback->question,
-            'answer' => $feedback->answer,
-            'context' => $context,
-            'recent_history' => array_values(array_map(static function (array $item): array {
-                return [
-                    'role' => (string) ($item['role'] ?? ''),
-                    'content' => (string) ($item['content'] ?? ''),
-                ];
-            }, $history)),
-            'output_requirements' => [
-                'Return only a JSON object.',
-                'Use should_index=true only if the exchange is reusable and broadly useful.',
-                'If the exchange is too specific, temporary, sensitive, or noisy, set should_index=false.',
-                'Keep the summary concise and neutral.',
-                'Prefer general reusable knowledge, not raw conversation.',
-            ],
-        ];
+        $analysisPromptInput = new FeedbackAnalysisPromptInput(
+            question: $feedback->question,
+            answer: $feedback->answer,
+            history: $history,
+            context: $context,
+            tenant: $feedback->tenant,
+            locale: $feedback->locale,
+        );
 
         try {
             $response = $this->chatProvider->chat(
-                message: json_encode($analysisRequest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: $feedback->question,
+                message: '',
                 context: $context,
                 tenant: $feedback->tenant,
                 locale: $feedback->locale,
                 history: $history,
                 vectorContext: ['ok' => false, 'collection' => '', 'matches' => []],
                 qdrantHealth: ['ok' => true],
-                extraInstruction: 'Return a single JSON object with keys: should_index, title, summary, content, language, confidence, keywords, duplicate_of, reason. Do not wrap the JSON in markdown or code fences.'
+                extraInstruction: '',
+                systemPrompt: $this->feedbackPromptBuilder->buildSystemPrompt(),
+                userPrompt: $this->feedbackPromptBuilder->buildUserPrompt($analysisPromptInput),
             );
             $content = trim((string) ($response['content'] ?? ''));
         } catch (Throwable $exception) {

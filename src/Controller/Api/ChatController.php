@@ -37,6 +37,7 @@ final class ChatController
 
         $message = trim((string) ($payload['message'] ?? ''));
         $conversationId = trim((string) ($payload['conversation_id'] ?? ''));
+        $clientKey = trim((string) ($payload['client_key'] ?? ''));
         $tenant = trim((string) ($payload['tenant'] ?? ''));
         $locale = $this->normalizeLocale($payload['locale'] ?? '');
 
@@ -54,10 +55,11 @@ final class ChatController
             ], JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $conversationId = $this->resolveConversationId($conversationId);
+        $conversationId = $this->resolveConversationId($conversationId, $tenant, $clientKey);
         $this->chatHistoryRepository->ensureConversation($conversationId, $tenant);
         $history = $this->chatHistoryRepository->fetchMessages($conversationId, $tenant, 12);
         $this->chatHistoryRepository->appendMessage($conversationId, $tenant, 'user', $message, [
+            'client_key' => $clientKey,
             'locale' => $locale,
             'context' => is_array($payload['context'] ?? null) ? $payload['context'] : [],
             'metadata' => is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
@@ -101,24 +103,33 @@ final class ChatController
 
         return new JsonResponse([
             'status' => 'success',
-            'data' => [
-                'message' => $assistantReply['message'],
-                'conversation_id' => $conversationId,
-                'assistant' => $this->assistantName,
-                'tenant' => $tenant,
-                'message_locale' => $assistantReply['message_locale'] ?? 'unknown',
-                'response_locale' => $assistantReply['response_locale'] ?? $locale,
-                'links' => $assistantReply['links'],
-                'intent' => $assistantReply['intent'],
-                'context_note' => $assistantReply['context_note'],
-                'sources' => $assistantReply['sources'],
-                'qdrant' => $qdrantHealth,
-            ],
-        ]);
+                'data' => [
+                    'message' => $assistantReply['message'],
+                    'conversation_id' => $conversationId,
+                    'assistant' => $this->assistantName,
+                    'tenant' => $tenant,
+                    'client_key' => $clientKey,
+                    'message_locale' => $assistantReply['message_locale'] ?? 'unknown',
+                    'response_locale' => $assistantReply['response_locale'] ?? $locale,
+                    'links' => $assistantReply['links'],
+                    'intent' => $assistantReply['intent'],
+                    'context_note' => $assistantReply['context_note'],
+                    'sources' => $assistantReply['sources'],
+                    'qdrant' => $qdrantHealth,
+                    'bundle' => [
+                        'widget_url' => '/asistente-ia/widget',
+                        'vector_form_url' => '/asistente-ia/vectorial',
+                    ],
+                ],
+            ]);
     }
 
-    private function resolveConversationId(string $conversationId): string
+    private function resolveConversationId(string $conversationId, string $tenant, string $clientKey): string
     {
+        if ($clientKey !== '') {
+            return $this->chatHistoryRepository->conversationIdFromClientKey($tenant, $clientKey);
+        }
+
         if ($conversationId === '') {
             return bin2hex(random_bytes(16));
         }

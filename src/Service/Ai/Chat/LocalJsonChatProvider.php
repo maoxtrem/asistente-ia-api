@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Ai\Chat;
 
+use App\DTO\ChatPromptInput;
 use App\Contract\ChatProviderAdapterInterface;
 use RuntimeException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
@@ -25,9 +26,10 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
         return $this->normalizeProviderKind($providerKind) === 'local_json';
     }
 
-    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = ''): array
+    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = '', ?string $systemPrompt = null, ?string $userPrompt = null): array
     {
         try {
+            $input = new ChatPromptInput($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction);
             $response = $this->httpClient->request('POST', rtrim($this->providerUrl, '/') . '/api/chat', [
                 'json' => [
                     'model' => $this->chatModel,
@@ -35,11 +37,11 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
                     'messages' => [
                         [
                             'role' => 'system',
-                            'content' => $this->promptBuilder->buildSystemPrompt($locale),
+                            'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
                         ],
                         [
                             'role' => 'user',
-                            'content' => $this->promptBuilder->buildUserPrompt($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction),
+                            'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
                         ],
                     ],
                 ],

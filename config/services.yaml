@@ -97,6 +97,10 @@ services:
         arguments:
             $assistantName: '%app.assistant_name%'
 
+    App\Controller\Api\BootstrapController:
+        arguments:
+            $assistantName: '%app.assistant_name%'
+
     App\Controller\Api\HealthController:
         arguments:
             $assistantName: '%app.assistant_name%'

@@ -51,6 +51,10 @@ final class FeedbackController
         return new JsonResponse([
             'status' => 'success',
             'data' => $result,
+            'bundle' => [
+                'widget_url' => '/asistente-ia/widget',
+                'vector_form_url' => '/asistente-ia/vectorial',
+            ],
         ]);
     }
 }

@@ -235,6 +235,32 @@ SQL;
         return (bool) $stmt->fetchColumn();
     }
 
+    public function conversationIdFromClientKey(string $tenant, string $clientKey): string
+    {
+        $tenant = trim($tenant);
+        $clientKey = trim($clientKey);
+
+        if ($tenant === '' || $clientKey === '') {
+            throw new RuntimeException('tenant y clientKey son obligatorios para resolver la conversacion.');
+        }
+
+        return $this->normalizeConversationId(md5(mb_strtolower($tenant . '|' . $clientKey)));
+    }
+
+    /**
+     * @return array{conversation_id:string, messages:array<int, array{role:string, content:string, created_at:string, metadata:array<string, mixed>}>}
+     */
+    public function bootstrapConversation(string $tenant, string $clientKey, int $limit = 20): array
+    {
+        $conversationId = $this->conversationIdFromClientKey($tenant, $clientKey);
+        $this->ensureConversation($conversationId, $tenant);
+
+        return [
+            'conversation_id' => $conversationId,
+            'messages' => $this->fetchMessages($conversationId, $tenant, $limit),
+        ];
+    }
+
     private function touchConversation(string $conversationId, string $tenant, string $updatedAt): void
     {
         $stmt = $this->pdo->prepare(

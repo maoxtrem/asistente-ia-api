@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Ai\Chat;
 
+use App\DTO\ChatPromptInput;
 use App\Contract\ChatProviderAdapterInterface;
 use RuntimeException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
@@ -26,9 +27,10 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
         return $this->normalizeProviderKind($providerKind) === 'openai_compatible';
     }
 
-    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = ''): array
+    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = '', ?string $systemPrompt = null, ?string $userPrompt = null): array
     {
         try {
+            $input = new ChatPromptInput($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction);
             $response = $this->httpClient->request('POST', $this->buildOpenAiCompatibleEndpoint('/chat/completions'), [
                 'json' => [
                     'model' => $this->chatModel,
@@ -36,11 +38,11 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
                     'messages' => [
                         [
                             'role' => 'system',
-                            'content' => $this->promptBuilder->buildSystemPrompt($locale),
+                            'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
                         ],
                         [
                             'role' => 'user',
-                            'content' => $this->promptBuilder->buildUserPrompt($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction),
+                            'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
                         ],
                     ],
                 ],

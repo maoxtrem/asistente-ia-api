@@ -17,6 +17,8 @@ interface ChatProviderInterface
         array $history,
         array $vectorContext,
         array $qdrantHealth,
-        string $extraInstruction = ''
+        string $extraInstruction = '',
+        ?string $systemPrompt = null,
+        ?string $userPrompt = null
     ): array;
 }

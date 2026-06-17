@@ -19,11 +19,11 @@ final class ChatProviderSelector implements ChatProviderInterface
     ) {
     }
 
-    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = ''): array
+    public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = '', ?string $systemPrompt = null, ?string $userPrompt = null): array
     {
         $provider = $this->resolveProvider();
 
-        return $provider->chat($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction);
+        return $provider->chat($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction, $systemPrompt, $userPrompt);
     }
 
     private function resolveProvider(): ChatProviderAdapterInterface
