@@ -48,14 +48,22 @@ final class IndexDocumentProcessor
         $this->qdrantClient->ensureCollection($this->qdrantCollection, count($vector));
 
         $pointId = $this->qdrantClient->stablePointId($document->indexKey());
+        $metadata = $document->metadata;
+        $documentKind = trim((string) ($metadata['document_kind'] ?? ''));
+        $payload = $document->toArray() + [
+            'index_key' => $document->indexKey(),
+            'indexed_text' => $text,
+        ];
+
+        if ($documentKind !== '' && !isset($payload['document_kind'])) {
+            $payload['document_kind'] = $documentKind;
+        }
+
         $upsert = $this->qdrantClient->upsertPoint(
             collection: $this->qdrantCollection,
             pointId: $pointId,
             vector: $vector,
-            payload: $document->toArray() + [
-                'index_key' => $document->indexKey(),
-                'indexed_text' => $text,
-            ],
+            payload: $payload,
         );
 
         return new IndexDocumentResponse(

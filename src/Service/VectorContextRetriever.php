@@ -13,6 +13,7 @@ final class VectorContextRetriever
         private readonly EmbeddingProviderInterface $embeddingClient,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
+        private readonly string $documentKind,
     ) {
     }
 
@@ -90,7 +91,7 @@ final class VectorContextRetriever
         }
 
         if ($tenants === []) {
-            return $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, null);
+            $tenants[] = null;
         }
 
         $perTenantLimit = max(1, (int) ceil($limit / max(1, count($tenants))));
@@ -99,6 +100,10 @@ final class VectorContextRetriever
             $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $perTenantLimit, $searchTenant);
 
             foreach ($results as $result) {
+                if (!$this->matchesDocumentKind($result)) {
+                    continue;
+                }
+
                 $dedupeKey = $this->matchKey($result);
                 if ($dedupeKey === '') {
                     continue;
@@ -119,6 +124,26 @@ final class VectorContextRetriever
         usort($matches, static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
 
         return array_slice($matches, 0, max(1, $limit));
+    }
+
+    /**
+     * Accepta el esquema viejo y el nuevo:
+     * - document_kind en la raiz del payload
+     * - metadata.document_kind dentro del payload
+     */
+    private function matchesDocumentKind(array $match): bool
+    {
+        $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
+        $kind = trim((string) ($payload['document_kind'] ?? ''));
+
+        if ($kind !== '') {
+            return $kind === $this->documentKind;
+        }
+
+        $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
+        $nestedKind = trim((string) ($metadata['document_kind'] ?? ''));
+
+        return $nestedKind === '' || $nestedKind === $this->documentKind;
     }
 
     /**

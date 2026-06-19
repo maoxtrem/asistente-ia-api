@@ -10,7 +10,8 @@ parameters:
     app.assistant_name: '%env(string:ASSISTANT_NAME)%'
     app.database_url: '%env(string:DATABASE_URL)%'
     app.qdrant_url: '%env(string:QDRANT_URL)%'
-    app.qdrant_collection: '%env(string:QDRANT_COLLECTION)%'
+    app.chat_qdrant_collection: '%env(string:QDRANT_CHAT_COLLECTION)%'
+    app.canvas_qdrant_collection: '%env(string:QDRANT_CANVAS_COLLECTION)%'
     app.embedding_provider_url: '%env(string:EMBEDDING_PROVIDER_URL)%'
     app.embedding_model: '%env(string:EMBEDDING_MODEL)%'
     app.chat_provider_url: '%env(string:CHAT_PROVIDER_URL)%'
@@ -83,11 +84,32 @@ services:
 
     App\Service\VectorContextRetriever:
         arguments:
-            $qdrantCollection: '%app.qdrant_collection%'
+            $qdrantCollection: '%app.chat_qdrant_collection%'
+            $documentKind: 'chat_knowledge'
+
+    app.canvas_vector_context_retriever:
+        class: App\Service\VectorContextRetriever
+        arguments:
+            $embeddingClient: '@App\Contract\EmbeddingProviderInterface'
+            $qdrantClient: '@App\Service\QdrantClient'
+            $qdrantCollection: '%app.canvas_qdrant_collection%'
+            $documentKind: 'canvas_operational'
 
     App\Service\IndexDocumentProcessor:
         arguments:
-            $qdrantCollection: '%app.qdrant_collection%'
+            $qdrantCollection: '%app.chat_qdrant_collection%'
+
+    app.canvas_index_document_processor:
+        class: App\Service\IndexDocumentProcessor
+        arguments:
+            $embeddingClient: '@App\Contract\EmbeddingProviderInterface'
+            $qdrantClient: '@App\Service\QdrantClient'
+            $qdrantCollection: '%app.canvas_qdrant_collection%'
+
+    App\Service\CanvasGenerationService:
+        arguments:
+            $vectorContextRetriever: '@app.canvas_vector_context_retriever'
+            $indexDocumentProcessor: '@app.canvas_index_document_processor'
 
     App\Service\ChatHistoryRepository:
         arguments:
@@ -105,9 +127,13 @@ services:
         arguments:
             $assistantName: '%app.assistant_name%'
 
+    App\Controller\Api\CanvasGenerationController:
+        arguments:
+            $assistantName: '%app.assistant_name%'
+
     App\Command\ReindexQdrantCollectionCommand:
         arguments:
-            $qdrantCollection: '%app.qdrant_collection%'
+            $qdrantCollection: '%app.chat_qdrant_collection%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

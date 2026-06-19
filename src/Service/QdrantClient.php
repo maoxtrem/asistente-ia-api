@@ -93,7 +93,7 @@ final class QdrantClient
      * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
-    public function searchPoints(string $collection, array $vector, int $limit = 5, ?string $tenant = null): array
+    public function searchPoints(string $collection, array $vector, int $limit = 5, ?string $tenant = null, array $matchFilters = []): array
     {
         $json = [
             'vector' => array_values($vector),
@@ -102,17 +102,36 @@ final class QdrantClient
             'with_vector' => false,
         ];
 
+        $must = [];
         $tenant = trim((string) ($tenant ?? ''));
         if ($tenant !== '') {
-            $json['filter'] = [
-                'must' => [
-                    [
-                        'key' => 'tenant',
-                        'match' => [
-                            'value' => $tenant,
-                        ],
-                    ],
+            $must[] = [
+                'key' => 'tenant',
+                'match' => [
+                    'value' => $tenant,
                 ],
+            ];
+        }
+
+        foreach ($matchFilters as $key => $value) {
+            $key = trim((string) $key);
+            $value = trim((string) $value);
+
+            if ($key === '' || $value === '') {
+                continue;
+            }
+
+            $must[] = [
+                'key' => $key,
+                'match' => [
+                    'value' => $value,
+                ],
+            ];
+        }
+
+        if ($must !== []) {
+            $json['filter'] = [
+                'must' => $must,
             ];
         }
 
@@ -146,7 +165,7 @@ final class QdrantClient
      *   next_page_offset: int|string|null
      * }
      */
-    public function scrollPoints(string $collection, int $limit = 50, int|string|null $offset = null, ?string $tenant = null): array
+    public function scrollPoints(string $collection, int $limit = 50, int|string|null $offset = null, ?string $tenant = null, array $matchFilters = []): array
     {
         $json = [
             'limit' => max(1, $limit),
@@ -158,17 +177,36 @@ final class QdrantClient
             $json['offset'] = $offset;
         }
 
+        $must = [];
         $tenant = trim((string) ($tenant ?? ''));
         if ($tenant !== '') {
-            $json['filter'] = [
-                'must' => [
-                    [
-                        'key' => 'tenant',
-                        'match' => [
-                            'value' => $tenant,
-                        ],
-                    ],
+            $must[] = [
+                'key' => 'tenant',
+                'match' => [
+                    'value' => $tenant,
                 ],
+            ];
+        }
+
+        foreach ($matchFilters as $key => $value) {
+            $key = trim((string) $key);
+            $value = trim((string) $value);
+
+            if ($key === '' || $value === '') {
+                continue;
+            }
+
+            $must[] = [
+                'key' => $key,
+                'match' => [
+                    'value' => $value,
+                ],
+            ];
+        }
+
+        if ($must !== []) {
+            $json['filter'] = [
+                'must' => $must,
             ];
         }
 

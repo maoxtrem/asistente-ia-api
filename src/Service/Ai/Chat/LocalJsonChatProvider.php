@@ -78,19 +78,50 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
 
     private function throwIfProviderError(array $payload): void
     {
-        $detailMessage = (string) ($payload['detail']['message'] ?? '');
+        $detailMessage = $this->extractNestedMessage($payload['detail'] ?? null);
         if ($detailMessage !== '') {
             throw new RuntimeException($detailMessage);
         }
 
-        $errorMessage = (string) ($payload['error']['message'] ?? '');
+        $errorMessage = $this->extractNestedMessage($payload['error'] ?? null);
         if ($errorMessage !== '') {
             throw new RuntimeException($errorMessage);
         }
 
-        $message = trim((string) ($payload['message'] ?? ''));
+        $message = trim($this->normalizeScalarMessage($payload['message'] ?? null));
         if ($message !== '' && !isset($payload['choices'])) {
             throw new RuntimeException($message);
         }
+    }
+
+    private function extractNestedMessage(mixed $value): string
+    {
+        if (is_array($value)) {
+            $nestedMessage = $value['message'] ?? '';
+            if (is_scalar($nestedMessage) || $nestedMessage === null) {
+                return trim((string) $nestedMessage);
+            }
+
+            return '';
+        }
+
+        return $this->normalizeScalarMessage($value);
+    }
+
+    private function normalizeScalarMessage(mixed $value): string
+    {
+        if (is_array($value) || is_object($value)) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_scalar($value) || $value === null) {
+            return trim((string) $value);
+        }
+
+        return '';
     }
 }
