@@ -11,6 +11,7 @@ final class IndexDocument
         public readonly string $type,
         public readonly string $source,
         public readonly string $tenant,
+        public readonly bool $isGlobal,
         public readonly string $title,
         public readonly string $content,
         public readonly array $metadata = [],
@@ -25,6 +26,7 @@ final class IndexDocument
             type: trim((string) ($payload['type'] ?? '')),
             source: trim((string) ($payload['source'] ?? '')),
             tenant: trim((string) ($payload['tenant'] ?? '')),
+            isGlobal: self::normalizeBool($payload['is_global'] ?? false),
             title: trim((string) ($payload['title'] ?? '')),
             content: trim((string) ($payload['content'] ?? '')),
             metadata: is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
@@ -54,6 +56,7 @@ final class IndexDocument
             'type' => $this->type,
             'source' => $this->source,
             'tenant' => $this->tenant,
+            'is_global' => $this->isGlobal,
             'title' => $this->title,
             'content' => $this->content,
             'metadata' => $this->metadata,
@@ -77,5 +80,24 @@ final class IndexDocument
         $normalized = strtolower(trim($operation));
 
         return in_array($normalized, ['delete', 'upsert'], true) ? $normalized : 'upsert';
+    }
+
+    private static function normalizeBool(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (bool) $value;
+        }
+
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+
+            return in_array($normalized, ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return false;
     }
 }

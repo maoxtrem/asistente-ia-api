@@ -13,7 +13,7 @@ final class VectorContextRetriever
         private readonly EmbeddingProviderInterface $embeddingClient,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
-        private readonly string $documentKind,
+        private readonly array $allowedDocumentKinds,
     ) {
     }
 
@@ -38,12 +38,14 @@ final class VectorContextRetriever
     {
         try {
             $vector = $this->embeddingClient->embed($message);
-            $matches = $this->searchAcrossTenants($vector, $tenant, $limit);
+            $searchTrace = [];
+            $matches = $this->searchAcrossTenants($vector, $tenant, $limit, $searchTrace);
         } catch (RuntimeException $exception) {
             return [
                 'ok' => false,
                 'collection' => $this->qdrantCollection,
                 'matches' => [],
+                'search_trace' => [],
                 'error' => $exception->getMessage(),
             ];
         }
@@ -52,6 +54,7 @@ final class VectorContextRetriever
             'ok' => true,
             'collection' => $this->qdrantCollection,
             'tenant' => trim((string) ($tenant ?? '')),
+            'search_trace' => $searchTrace,
             'matches' => array_map(static function (array $match): array {
                 $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
                 $indexedText = trim((string) ($payload['indexed_text'] ?? $payload['content'] ?? ''));
@@ -77,27 +80,55 @@ final class VectorContextRetriever
      * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
-    private function searchAcrossTenants(array $vector, ?string $tenant, int $limit): array
+    private function searchAcrossTenants(array $vector, ?string $tenant, int $limit, array &$searchTrace = []): array
     {
         $tenant = trim((string) ($tenant ?? ''));
-        $tenants = [];
+        $queries = [];
 
         if ($tenant !== '') {
-            $tenants[] = $tenant;
+            $queries[] = [
+                'label' => $tenant,
+                'tenant' => $tenant,
+                'matchFilters' => [],
+            ];
         }
 
         if ($tenant !== 'global') {
-            $tenants[] = 'global';
+            $queries[] = [
+                'label' => 'global',
+                'tenant' => 'global',
+                'matchFilters' => [],
+            ];
         }
 
-        if ($tenants === []) {
-            $tenants[] = null;
+        $queries[] = [
+            'label' => 'is_global',
+            'tenant' => null,
+            'matchFilters' => ['is_global' => true],
+        ];
+
+        if ($tenant === '') {
+            $queries[] = [
+                'label' => 'all',
+                'tenant' => null,
+                'matchFilters' => [],
+            ];
         }
 
-        $perTenantLimit = max(1, (int) ceil($limit / max(1, count($tenants))));
         $merged = [];
-        foreach ($tenants as $searchTenant) {
-            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $perTenantLimit, $searchTenant);
+        foreach ($queries as $query) {
+            $results = $this->qdrantClient->searchPoints(
+                $this->qdrantCollection,
+                $vector,
+                $limit,
+                $query['tenant'],
+                $query['matchFilters']
+            );
+            $searchTrace[] = [
+                'tenant' => $query['tenant'],
+                'label' => $query['label'],
+                'count' => count($results),
+            ];
 
             foreach ($results as $result) {
                 if (!$this->matchesDocumentKind($result)) {
@@ -120,6 +151,31 @@ final class VectorContextRetriever
             }
         }
 
+        if ($merged === [] && $tenant !== '') {
+            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, null);
+            $searchTrace[] = [
+                'tenant' => null,
+                'label' => 'fallback_all',
+                'count' => count($results),
+                'fallback' => true,
+            ];
+
+            foreach ($results as $result) {
+                if (!$this->matchesDocumentKind($result)) {
+                    continue;
+                }
+
+                $dedupeKey = $this->matchKey($result);
+                if ($dedupeKey === '') {
+                    continue;
+                }
+
+                if (!isset($merged[$dedupeKey]) || $result['score'] > $merged[$dedupeKey]['score']) {
+                    $merged[$dedupeKey] = $result;
+                }
+            }
+        }
+
         $matches = array_values($merged);
         usort($matches, static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
 
@@ -135,15 +191,16 @@ final class VectorContextRetriever
     {
         $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
         $kind = trim((string) ($payload['document_kind'] ?? ''));
+        $allowedKinds = $this->normalizedAllowedDocumentKinds();
 
         if ($kind !== '') {
-            return $kind === $this->documentKind;
+            return in_array($kind, $allowedKinds, true);
         }
 
         $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
         $nestedKind = trim((string) ($metadata['document_kind'] ?? ''));
 
-        return $nestedKind === '' || $nestedKind === $this->documentKind;
+        return $nestedKind === '' || in_array($nestedKind, $allowedKinds, true);
     }
 
     /**
@@ -161,5 +218,24 @@ final class VectorContextRetriever
         $id = trim((string) ($match['id'] ?? ''));
 
         return $id;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function normalizedAllowedDocumentKinds(): array
+    {
+        $kinds = array_map(
+            static fn (mixed $kind): string => trim((string) $kind),
+            $this->allowedDocumentKinds
+        );
+
+        $kinds = array_values(array_filter($kinds, static fn (string $kind): bool => $kind !== ''));
+
+        if ($kinds === []) {
+            return ['chat_knowledge'];
+        }
+
+        return array_values(array_unique($kinds));
     }
 }

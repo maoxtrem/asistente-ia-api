@@ -59,6 +59,10 @@ final class IndexDocumentProcessor
             $payload['document_kind'] = $documentKind;
         }
 
+        if ($document->isGlobal && !isset($payload['is_global'])) {
+            $payload['is_global'] = true;
+        }
+
         $upsert = $this->qdrantClient->upsertPoint(
             collection: $this->qdrantCollection,
             pointId: $pointId,

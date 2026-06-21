@@ -85,7 +85,7 @@ services:
     App\Service\VectorContextRetriever:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
-            $documentKind: 'chat_knowledge'
+            $allowedDocumentKinds: ['chat_knowledge', 'module']
 
     app.canvas_vector_context_retriever:
         class: App\Service\VectorContextRetriever
@@ -93,7 +93,7 @@ services:
             $embeddingClient: '@App\Contract\EmbeddingProviderInterface'
             $qdrantClient: '@App\Service\QdrantClient'
             $qdrantCollection: '%app.canvas_qdrant_collection%'
-            $documentKind: 'canvas_operational'
+            $allowedDocumentKinds: ['canvas_operational']
 
     App\Service\IndexDocumentProcessor:
         arguments:

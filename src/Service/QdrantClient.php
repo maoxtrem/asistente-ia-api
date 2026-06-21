@@ -115,9 +115,9 @@ final class QdrantClient
 
         foreach ($matchFilters as $key => $value) {
             $key = trim((string) $key);
-            $value = trim((string) $value);
+            $value = $this->normalizeMatchFilterValue($value);
 
-            if ($key === '' || $value === '') {
+            if ($key === '' || $value === null || $value === '') {
                 continue;
             }
 
@@ -190,9 +190,9 @@ final class QdrantClient
 
         foreach ($matchFilters as $key => $value) {
             $key = trim((string) $key);
-            $value = trim((string) $value);
+            $value = $this->normalizeMatchFilterValue($value);
 
-            if ($key === '' || $value === '') {
+            if ($key === '' || $value === null || $value === '') {
                 continue;
             }
 
@@ -242,6 +242,23 @@ final class QdrantClient
             }, $points)),
             'next_page_offset' => $result['next_page_offset'] ?? null,
         ];
+    }
+
+    private function normalizeMatchFilterValue(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return trim($value);
+        }
+
+        if (is_bool($value) || is_int($value) || is_float($value)) {
+            return $value;
+        }
+
+        if ($value === null) {
+            return null;
+        }
+
+        return (string) $value;
     }
 
     public function stablePointId(string $seed): string
