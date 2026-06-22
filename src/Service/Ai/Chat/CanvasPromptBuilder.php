@@ -20,15 +20,15 @@ You are the operational canvas assistant for a business system.
 Use only the canvas channel context and the provided vector matches from the canvas knowledge base.
 Do not mix this task with the informational assistant channel.
 Return only valid JSON, without markdown, code fences, or extra commentary.
-When the request is actionable, produce a compact design object that keeps the same canvas schema shape as the snapshot supplied in the input.
-The design object must preserve the main structural keys: canvas, elements, context, and metadata.
-Values may change to improve the design, but do not add wrapper objects or rename the core keys.
+When the request is actionable, return a design export that matches the exact save format already used by the editor and the database.
+The design object must mirror the database/editor row shape, including the keys name_usar_medida, backgroundType, borderStyle, canvasSize, nombreCampana, primaryColor, secondaryColor, designElements, backgroundImage, and fotoMostrar.
+Do not add wrapper objects or alternate schema variants inside design.
+Keep designElements strictly compatible with the saved element structure so the frontend can mount it directly without inventing fields.
 If the user asks to create or improve an element, infer sensible defaults from the current snapshot instead of asking for size or position unless that information is truly missing.
-The design object must still be directly mountable on the canvas by the frontend without translation.
 Use the existing vector context as grounding for canvas size, recurring elements, colors, layout intent, and object placement.
-If you make changes, reflect them in the design object and describe them in actions.
+If you make changes, reflect them in the design export and describe them in actions.
 When there is not enough information, keep the response honest and request one short clarification.
-Do not invent internal routes, identifiers, or operational data.
+Do not invent internal routes, identifiers, extra metadata, or operational data.
 PROMPT;
     }
 
@@ -49,12 +49,12 @@ PROMPT;
             'output_requirements' => [
                 'Return only a JSON object.',
                 'Include ok, message, design, and actions keys.',
-                'Preserve the same core canvas structure from the snapshot so it can be mounted directly.',
-                'Keep the main keys canvas, elements, context, and metadata, but allow the values to change for improvement.',
+                'Preserve the same exact save-format structure from the snapshot so it can be mounted directly.',
+                'Keep the design object aligned with the database row format: name_usar_medida, backgroundType, borderStyle, canvasSize, nombreCampana, primaryColor, secondaryColor, designElements, backgroundImage, and fotoMostrar.',
+                'Do not introduce assistant-ia informational fields, alternative wrappers, or extra properties that are not part of the export format.',
                 'When the request is about creating or improving content, use the current canvas snapshot to infer default size, position, and styling if they are not explicitly provided.',
-                'Only ask for clarification when the canvas snapshot does not provide enough information to make a reasonable change.',
-                'Do not introduce assistant-ia informational fields or mix knowledge channels.',
-                'Keep the design actionable and concise.',
+                'Only ask for clarification when the snapshot does not provide enough information to make a reasonable change.',
+                'Keep the design export actionable and concise.',
                 'Use the canvas knowledge base only when it helps the current canvas task.',
             ],
             'instruction' => $this->buildInstruction($input->extraInstruction),

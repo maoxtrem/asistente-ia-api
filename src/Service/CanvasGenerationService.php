@@ -95,7 +95,8 @@ final class CanvasGenerationService
             $message = $ok ? 'Canvas generado correctamente.' : 'No fue posible generar el canvas.';
         }
 
-        $design = is_array($decoded['design'] ?? null) ? $decoded['design'] : null;
+        $designCandidate = is_array($decoded['design'] ?? null) ? $decoded['design'] : $decoded;
+        $design = $this->normalizeDesignExport($designCandidate, $request->snapshot);
         $actions = is_array($decoded['actions'] ?? null) ? $decoded['actions'] : [];
         $raw = [
             'assistant_response' => $response,
@@ -190,6 +191,159 @@ final class CanvasGenerationService
     private function normalizeBool(mixed $value): bool
     {
         return filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    /**
+     * @param array<string, mixed> $candidate
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    private function normalizeDesignExport(array $candidate, array $snapshot): array
+    {
+        $template = $this->buildDesignTemplate($snapshot);
+        $normalizedCandidate = $this->normalizeCandidateDesign($candidate, $snapshot);
+        $normalized = $this->applyTemplateShape($normalizedCandidate, $template);
+
+        return is_array($normalized) ? $normalized : $template;
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    private function buildDesignTemplate(array $snapshot): array
+    {
+        $design = is_array($snapshot['design'] ?? null) ? $snapshot['design'] : [];
+        $canvas = is_array($snapshot['canvas'] ?? null) ? $snapshot['canvas'] : [];
+        $elements = array_values(is_array($snapshot['designElements'] ?? null)
+            ? $snapshot['designElements']
+            : (is_array($snapshot['elements'] ?? null) ? $snapshot['elements'] : []));
+
+        return [
+            'id' => $snapshot['id'] ?? null,
+            'name_usar_medida' => $snapshot['name_usar_medida'] ?? ($snapshot['usarMedidas'] ?? null),
+            'token' => $snapshot['token'] ?? null,
+            'url' => $snapshot['url'] ?? null,
+            'backgroundType' => $snapshot['backgroundType'] ?? ($canvas['backgroundType'] ?? null),
+            'borderStyle' => $snapshot['borderStyle'] ?? ($design['borde'] ?? null),
+            'canvasSize' => $snapshot['canvasSize'] ?? $this->resolveCanvasSize($canvas, $design),
+            'nombreCampana' => $snapshot['nombreCampana'] ?? null,
+            'primaryColor' => $snapshot['primaryColor'] ?? ($design['fondo'] ?? ($canvas['colors']['primary'] ?? null)),
+            'secondaryColor' => $snapshot['secondaryColor'] ?? ($design['acento'] ?? ($canvas['colors']['secondary'] ?? null)),
+            'designElements' => $elements,
+            'backgroundImage' => $snapshot['backgroundImage'] ?? ($canvas['backgroundImage'] ?? null),
+            'fotoMostrar' => $snapshot['fotoMostrar'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $candidate
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    private function normalizeCandidateDesign(array $candidate, array $snapshot): array
+    {
+        $normalized = $candidate;
+        $designMeta = is_array($candidate['design'] ?? null) ? $candidate['design'] : [];
+
+        if (!array_key_exists('designElements', $normalized) && array_key_exists('elements', $normalized)) {
+            $normalized['designElements'] = $normalized['elements'];
+        }
+
+        if (!array_key_exists('backgroundType', $normalized) && array_key_exists('canvas', $normalized) && is_array($normalized['canvas'])) {
+            $normalized['backgroundType'] = $normalized['canvas']['backgroundType'] ?? ($snapshot['backgroundType'] ?? null);
+        }
+
+        if (!array_key_exists('backgroundImage', $normalized) && array_key_exists('canvas', $normalized) && is_array($normalized['canvas'])) {
+            $normalized['backgroundImage'] = $normalized['canvas']['backgroundImage'] ?? ($snapshot['backgroundImage'] ?? null);
+        }
+
+        if (!array_key_exists('primaryColor', $normalized)) {
+            $normalized['primaryColor'] = $candidate['primaryColor'] ?? ($designMeta['fondo'] ?? ($snapshot['primaryColor'] ?? null));
+        }
+
+        if (!array_key_exists('secondaryColor', $normalized)) {
+            $normalized['secondaryColor'] = $candidate['secondaryColor'] ?? ($designMeta['acento'] ?? ($snapshot['secondaryColor'] ?? null));
+        }
+
+        if (!array_key_exists('borderStyle', $normalized)) {
+            $normalized['borderStyle'] = $candidate['borderStyle'] ?? ($designMeta['borde'] ?? ($snapshot['borderStyle'] ?? null));
+        }
+
+        if (!array_key_exists('canvasSize', $normalized)) {
+            $normalized['canvasSize'] = $candidate['canvasSize'] ?? ($designMeta['lienzo'] ?? ($snapshot['canvasSize'] ?? null));
+        }
+
+        if (!array_key_exists('name_usar_medida', $normalized)) {
+            $normalized['name_usar_medida'] = $candidate['name_usar_medida'] ?? ($snapshot['name_usar_medida'] ?? null);
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $canvas
+     * @param array<string, mixed> $design
+     */
+    private function resolveCanvasSize(array $canvas, array $design): ?string
+    {
+        $width = $canvas['width'] ?? null;
+        $height = $canvas['height'] ?? null;
+
+        if (is_numeric($width) && is_numeric($height) && (int) $width > 0 && (int) $height > 0) {
+            return (int) $width . 'x' . (int) $height;
+        }
+
+        $size = $design['lienzo'] ?? null;
+        if (is_string($size) && preg_match('/^\s*\d+\s*x\s*\d+\s*$/i', $size)) {
+            return trim($size);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param mixed $candidate
+     * @param mixed $template
+     * @return mixed
+     */
+    private function applyTemplateShape(mixed $candidate, mixed $template): mixed
+    {
+        if (is_array($template)) {
+            if (array_is_list($template)) {
+                if (!is_array($candidate)) {
+                    return $template;
+                }
+
+                if ($template === []) {
+                    return array_values($candidate);
+                }
+
+                $candidateList = array_values($candidate);
+                $normalizedList = [];
+                $templateCount = count($template);
+
+                foreach ($candidateList as $index => $item) {
+                    $shape = $template[$index] ?? $template[$templateCount - 1];
+                    $normalizedList[] = $this->applyTemplateShape($item, $shape);
+                }
+
+                return $normalizedList;
+            }
+
+            $candidateArray = is_array($candidate) ? $candidate : [];
+            $normalized = [];
+
+            foreach ($template as $key => $templateValue) {
+                $normalized[$key] = array_key_exists($key, $candidateArray)
+                    ? $this->applyTemplateShape($candidateArray[$key], $templateValue)
+                    : $templateValue;
+            }
+
+            return $normalized;
+        }
+
+        return $candidate ?? $template;
     }
 
     private function decodeJson(string $content): ?array
