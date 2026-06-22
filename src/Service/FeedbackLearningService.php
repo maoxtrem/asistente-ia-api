@@ -28,31 +28,10 @@ final class FeedbackLearningService
      */
     public function record(FeedbackRequest $feedback): array
     {
-        $conversationId = trim((string) ($feedback->conversationId ?? ''));
-        $clientKey = trim((string) ($feedback->clientKey ?? ''));
-
-        if ($conversationId === '' && $clientKey !== '') {
-            $conversationId = $this->chatHistoryRepository->conversationIdFromClientKey($feedback->tenant, $clientKey);
-        }
-
-        if ($conversationId === '') {
-            $conversationId = md5(implode('|', [
-                $feedback->tenant,
-                $feedback->locale,
-                trim(mb_strtolower($feedback->question)),
-                trim(mb_strtolower($feedback->answer)),
-            ]));
-        }
-
-        $metadata = array_filter([
-            'conversation_id' => $feedback->conversationId,
-            'conversation_id_normalized' => $conversationId,
-            'client_key' => $clientKey !== '' ? $clientKey : null,
+        [$conversationId, $clientKey, $metadata] = $this->buildConversationContext($feedback, [
             'helpful' => $feedback->helpful,
-            'locale' => $feedback->locale,
-            'context' => $feedback->context,
-            'metadata' => $feedback->metadata,
-        ], static fn (mixed $value): bool => $value !== null && $value !== []);
+            'approval_mode' => 'auto',
+        ]);
 
         $this->chatHistoryRepository->appendFeedback(
             $conversationId,
@@ -155,6 +134,39 @@ final class FeedbackLearningService
             'point_id' => $indexedPointId,
             'indexed_at' => $indexedAt,
         ];
+    }
+
+    /**
+     * @return array{0:string,1:string,2:array<string, mixed>}
+     */
+    private function buildConversationContext(FeedbackRequest $feedback, array $metadataExtras = []): array
+    {
+        $conversationId = trim((string) ($feedback->conversationId ?? ''));
+        $clientKey = trim((string) ($feedback->clientKey ?? ''));
+
+        if ($conversationId === '' && $clientKey !== '') {
+            $conversationId = $this->chatHistoryRepository->conversationIdFromClientKey($feedback->tenant, $clientKey);
+        }
+
+        if ($conversationId === '') {
+            $conversationId = md5(implode('|', [
+                $feedback->tenant,
+                $feedback->locale,
+                trim(mb_strtolower($feedback->question)),
+                trim(mb_strtolower($feedback->answer)),
+            ]));
+        }
+
+        $metadata = array_filter([
+            'conversation_id' => $feedback->conversationId,
+            'conversation_id_normalized' => $conversationId,
+            'client_key' => $clientKey !== '' ? $clientKey : null,
+            'locale' => $feedback->locale,
+            'context' => $feedback->context,
+            'metadata' => $feedback->metadata,
+        ] + $metadataExtras, static fn (mixed $value): bool => $value !== null && $value !== []);
+
+        return [$conversationId, $clientKey, $metadata];
     }
 
     /**
