@@ -14,6 +14,7 @@ final readonly class CanvasPromptInput
      * @param array<string, mixed> $vectorContext
      * @param array<string, mixed> $qdrantHealth
      * @param array<string, mixed> $metadata
+     * @param array<string, mixed> $incomingVectorContext
      * @param array<string, mixed> $snapshot
      */
     public function __construct(
@@ -28,6 +29,7 @@ final readonly class CanvasPromptInput
         public array $vectorContext,
         public array $qdrantHealth,
         public array $metadata,
+        public array $incomingVectorContext,
         public array $snapshot,
         public string $extraInstruction = '',
     ) {

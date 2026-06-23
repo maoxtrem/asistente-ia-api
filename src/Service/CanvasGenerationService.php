@@ -28,6 +28,7 @@ final class CanvasGenerationService
     public function generate(CanvasGenerationRequest $request): CanvasGenerationResponse
     {
         $context = $this->buildContext($request);
+        $requestIndexation = $this->indexCanvasOperation($request);
         $qdrantHealth = $this->qdrantClient->health();
         $vectorContext = $this->vectorContextRetriever->retrieve($request->message, $request->tenant, 2);
         $generationResponse = null;
@@ -55,6 +56,7 @@ final class CanvasGenerationService
                     vectorContext: $vectorContext,
                     qdrantHealth: $qdrantHealth,
                     metadata: $request->metadata,
+                    incomingVectorContext: $request->vectorContext,
                     snapshot: $request->snapshot,
                 )),
             );
@@ -67,7 +69,6 @@ final class CanvasGenerationService
                 actions: [],
                 raw: ['error' => $exception->getMessage()],
             );
-            $this->indexCanvasOperation($request, $generationResponse, $vectorContext);
 
             return $generationResponse;
         }
@@ -84,7 +85,6 @@ final class CanvasGenerationService
                     'vector_context' => $vectorContext,
                 ],
             );
-            $this->indexCanvasOperation($request, $generationResponse, $vectorContext);
 
             return $generationResponse;
         }
@@ -98,22 +98,20 @@ final class CanvasGenerationService
         $designCandidate = is_array($decoded['design'] ?? null) ? $decoded['design'] : $decoded;
         $design = $this->normalizeDesignExport($designCandidate, $request->snapshot);
         $actions = is_array($decoded['actions'] ?? null) ? $decoded['actions'] : [];
-        $raw = [
-            'assistant_response' => $response,
-            'payload' => $decoded,
-            'vector_context' => $vectorContext,
-            'qdrant_health' => $qdrantHealth,
-        ];
 
         $generationResponse = new CanvasGenerationResponse(
             ok: $ok,
             message: $message,
             design: $design,
             actions: $actions,
-            raw: $raw,
+            raw: [
+                'assistant_response' => $response,
+                'payload' => $decoded,
+                'vector_context' => $vectorContext,
+                'qdrant_health' => $qdrantHealth,
+                'request_indexation' => $requestIndexation,
+            ],
         );
-
-        $this->indexCanvasOperation($request, $generationResponse, $vectorContext);
 
         return $generationResponse;
     }
@@ -131,7 +129,10 @@ final class CanvasGenerationService
         ];
     }
 
-    private function indexCanvasOperation(CanvasGenerationRequest $request, CanvasGenerationResponse $response, array $vectorContext): void
+    /**
+     * @return array{ok:bool, collection:?string, point_id:?string, error:?string}
+     */
+    private function indexCanvasOperation(CanvasGenerationRequest $request): array
     {
         try {
             $document = IndexDocument::fromArray([
@@ -146,7 +147,7 @@ final class CanvasGenerationService
                 'source' => 'asistente_camvasia',
                 'tenant' => $request->tenant,
                 'title' => $this->buildTitle($request->message),
-                'content' => $this->buildContent($request, $response),
+                'content' => $this->buildContent($request),
                 'metadata' => [
                     'document_kind' => 'canvas_operational',
                     'message' => $request->message,
@@ -154,15 +155,27 @@ final class CanvasGenerationService
                     'canvas' => $request->canvas,
                     'elements' => $request->elements,
                     'context' => $request->context,
-                    'response' => $response->toArray(),
-                    'vector_context' => $vectorContext,
+                    'incoming_vector_context' => $request->vectorContext,
+                    'vector_context' => $request->vectorContext,
                 ],
                 'operation' => 'upsert',
             ]);
 
-            $this->indexDocumentProcessor->process($document);
-        } catch (Throwable) {
-            // La indexacion no debe romper la respuesta del canvas.
+            $indexResponse = $this->indexDocumentProcessor->process($document);
+
+            return [
+                'ok' => true,
+                'collection' => $indexResponse->collection,
+                'point_id' => $indexResponse->pointId,
+                'error' => null,
+            ];
+        } catch (Throwable $exception) {
+            return [
+                'ok' => false,
+                'collection' => null,
+                'point_id' => null,
+                'error' => $exception->getMessage(),
+            ];
         }
     }
 
@@ -176,16 +189,58 @@ final class CanvasGenerationService
         return mb_substr($message, 0, 80);
     }
 
-    private function buildContent(CanvasGenerationRequest $request, CanvasGenerationResponse $response): string
+    private function buildContent(CanvasGenerationRequest $request): string
     {
         try {
             return json_encode([
+                'summary' => $this->buildCanvasSummary($request),
                 'request' => $request->toArray(),
-                'response' => $response->toArray(),
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         } catch (JsonException $exception) {
             throw new RuntimeException('No fue posible serializar el documento canvas a JSON.', 0, $exception);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildCanvasSummary(CanvasGenerationRequest $request): array
+    {
+        $canvas = $request->canvas;
+        $snapshot = $request->snapshot;
+        $elements = array_values(is_array($snapshot['designElements'] ?? null)
+            ? $snapshot['designElements']
+            : (is_array($request->elements) ? $request->elements : []));
+
+        $elementSummaries = array_values(array_filter(array_map(static function (array $element): ?array {
+            $type = trim((string) ($element['type'] ?? ''));
+            if ($type === '') {
+                return null;
+            }
+
+            $label = trim((string) ($element['content'] ?? $element['title'] ?? $element['text'] ?? ''));
+            if ($label === '' && isset($element['dataset']['snapshotType'])) {
+                $label = trim((string) $element['dataset']['snapshotType']);
+            }
+
+            return [
+                'type' => $type,
+                'label' => $label,
+                'id' => trim((string) ($element['id'] ?? '')),
+            ];
+        }, $elements)));
+
+        return [
+            'tenant' => $request->tenant,
+            'locale' => $request->locale,
+            'mode' => $request->mode,
+            'message' => $request->message,
+            'canvas_size' => $this->resolveCanvasSize($canvas, is_array($snapshot['design'] ?? null) ? $snapshot['design'] : []),
+            'background_type' => $request->snapshot['backgroundType'] ?? ($canvas['backgroundType'] ?? null),
+            'background_image' => $request->snapshot['backgroundImage'] ?? ($canvas['backgroundImage'] ?? null),
+            'element_count' => count($elementSummaries),
+            'elements' => $elementSummaries,
+        ];
     }
 
     private function normalizeBool(mixed $value): bool

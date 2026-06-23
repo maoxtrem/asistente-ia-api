@@ -23,6 +23,7 @@ final readonly class CanvasGenerationRequest
         public array $elements,
         public array $context,
         public array $metadata,
+        public array $vectorContext,
         public array $snapshot,
         public array $history,
     ) {
@@ -39,6 +40,7 @@ final readonly class CanvasGenerationRequest
             elements: is_array($payload['elements'] ?? null) ? $payload['elements'] : [],
             context: is_array($payload['context'] ?? null) ? $payload['context'] : [],
             metadata: is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
+            vectorContext: self::normalizeVectorContext($payload),
             snapshot: self::normalizeSnapshot($payload),
             history: self::normalizeHistory($payload['history'] ?? []),
         );
@@ -58,6 +60,7 @@ final readonly class CanvasGenerationRequest
             'elements' => $this->elements,
             'context' => $this->context,
             'metadata' => $this->metadata,
+            'vector_context' => $this->vectorContext,
             'snapshot' => $this->snapshot,
             'history' => $this->history,
         ];
@@ -93,8 +96,29 @@ final readonly class CanvasGenerationRequest
      */
     private static function normalizeSnapshot(array $payload): array
     {
-        $snapshot = $payload['snapshot'] ?? ($payload['context']['snapshot'] ?? []);
+        $context = is_array($payload['context'] ?? null) ? $payload['context'] : [];
+        $snapshot = $payload['snapshot'] ?? ($context['snapshot'] ?? []);
 
         return is_array($snapshot) ? $snapshot : [];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private static function normalizeVectorContext(array $payload): array
+    {
+        $context = is_array($payload['context'] ?? null) ? $payload['context'] : [];
+        $snapshot = is_array($payload['snapshot'] ?? null) ? $payload['snapshot'] : [];
+        $candidate = $payload['vector_context']
+            ?? $payload['vectorContext']
+            ?? $payload['vectoriales']
+            ?? $payload['vectors']
+            ?? ($context['vector_context'] ?? null)
+            ?? ($context['vectorContext'] ?? null)
+            ?? ($snapshot['vector_context'] ?? null)
+            ?? ($snapshot['vectorContext'] ?? null);
+
+        return is_array($candidate) ? $candidate : [];
     }
 }

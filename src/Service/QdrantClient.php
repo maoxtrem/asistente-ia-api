@@ -10,10 +10,13 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class QdrantClient
 {
+    private readonly HttpClientInterface $httpClient;
+
     public function __construct(
-        private readonly HttpClientInterface $httpClient,
+        HttpClientInterface $httpClient,
         private readonly string $qdrantUrl,
     ) {
+        $this->httpClient = $this->configureHttpClient($httpClient, $qdrantUrl);
     }
 
     public function health(): array
@@ -273,5 +276,25 @@ final class QdrantClient
             sprintf('%04x', (hexdec(substr($hash, 16, 4)) & 0x3fff) | 0x8000),
             substr($hash, 20, 12)
         );
+    }
+
+    /**
+     * Qdrant local de desarrollo usa un proxy HTTPS con certificado no confiable.
+     * Si el host es local, relajamos TLS solo para este cliente.
+     *
+     * @return HttpClientInterface
+     */
+    private function configureHttpClient(HttpClientInterface $httpClient, string $qdrantUrl): HttpClientInterface
+    {
+        $host = strtolower(trim((string) parse_url($qdrantUrl, PHP_URL_HOST)));
+
+        if ($host === '' || (!str_ends_with($host, '.localhost') && $host !== 'localhost' && $host !== '127.0.0.1')) {
+            return $httpClient;
+        }
+
+        return $httpClient->withOptions([
+            'verify_peer' => false,
+            'verify_host' => false,
+        ]);
     }
 }

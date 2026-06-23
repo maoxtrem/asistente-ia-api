@@ -46,6 +46,7 @@ PROMPT;
             'context' => $this->buildContextPayload($input->context, $input->tenant, $input->locale, $input->qdrantHealth),
             'recent_history' => $this->normalizeHistory($input->history),
             'vector_context' => $this->normalizeVectorMatches($input->vectorContext),
+            'incoming_vector_context' => $this->normalizeIncomingVectorContext($input->incomingVectorContext),
             'output_requirements' => [
                 'Return only a JSON object.',
                 'Include ok, message, design, and actions keys.',
@@ -95,6 +96,24 @@ PROMPT;
                 'tenant' => self::normalizeString($document['tenant'] ?? ''),
             ];
         }, array_slice($matches, 0, self::MAX_VECTOR_MATCHES)));
+    }
+
+    /**
+     * @param array<string, mixed> $vectorContext
+     * @return array<string, mixed>
+     */
+    private function normalizeIncomingVectorContext(array $vectorContext): array
+    {
+        if ($vectorContext === []) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($vectorContext as $key => $value) {
+            $normalized[(string) $key] = $value;
+        }
+
+        return $normalized;
     }
 
     /**
