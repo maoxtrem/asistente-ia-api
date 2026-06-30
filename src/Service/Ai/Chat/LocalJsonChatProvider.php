@@ -29,21 +29,35 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
     public function chat(string $message, array $context, string $tenant, string $locale, array $history, array $vectorContext, array $qdrantHealth, string $extraInstruction = '', ?string $systemPrompt = null, ?string $userPrompt = null): array
     {
         try {
-            $input = new ChatPromptInput($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction);
+            $input = new ChatPromptInput(
+                $message,
+                $context,
+                $tenant,
+                $locale,
+                $history,
+                $vectorContext,
+                $qdrantHealth,
+                $extraInstruction,
+            );
+            $messages = [
+                [
+                    'role' => 'system',
+                    'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
+                ],
+            ];
+
+            if (trim((string) $userPrompt) !== '') {
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
+                ];
+            }
+
             $response = $this->httpClient->request('POST', rtrim($this->providerUrl, '/') . '/api/chat', [
                 'json' => [
                     'model' => $this->chatModel,
                     'stream' => false,
-                    'messages' => [
-                        [
-                            'role' => 'system',
-                            'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
-                        ],
-                        [
-                            'role' => 'user',
-                            'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
-                        ],
-                    ],
+                    'messages' => $messages,
                 ],
                 'timeout' => $this->timeout,
                 'max_connect_duration' => 5,

@@ -15,6 +15,8 @@ final class CanvasGenerationResponse
         public readonly string $message,
         public readonly ?array $design,
         public readonly array $actions,
+        public readonly ?string $imageUrl,
+        public readonly ?string $imageKey,
         public readonly array $raw,
     ) {
     }
@@ -27,9 +29,8 @@ final class CanvasGenerationResponse
         return [
             'ok' => $this->ok,
             'message' => $this->message,
-            'design' => $this->design,
-            'actions' => $this->actions,
-            'raw' => $this->raw,
+            'imageUrl' => $this->imageUrl,
+            'imageKey' => $this->imageKey,
         ];
     }
 }

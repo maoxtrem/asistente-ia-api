@@ -14,7 +14,6 @@ final class CanvasGenerationController
 {
     public function __construct(
         private readonly CanvasGenerationService $canvasGenerationService,
-        private readonly string $assistantName,
     ) {
     }
 
@@ -24,33 +23,30 @@ final class CanvasGenerationController
         $payload = json_decode($request->getContent(), true);
 
         if (!is_array($payload)) {
-            return new JsonResponse([
-                'ok' => false,
-                'message' => 'El cuerpo debe ser JSON valido.',
-                'design' => null,
-                'actions' => [],
-                'raw' => ['error' => 'invalid_json'],
-                'assistant' => $this->assistantName,
-            ], JsonResponse::HTTP_BAD_REQUEST);
+            return new JsonResponse($this->buildErrorPayload('El cuerpo debe ser JSON valido.'), JsonResponse::HTTP_BAD_REQUEST);
         }
 
         $canvasRequest = CanvasGenerationRequest::fromArray($payload);
 
         if ($canvasRequest->message === '') {
-            return new JsonResponse([
-                'ok' => false,
-                'message' => 'El campo message es obligatorio.',
-                'design' => null,
-                'actions' => [],
-                'raw' => ['error' => 'message_required'],
-                'assistant' => $this->assistantName,
-            ], JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
+            return new JsonResponse($this->buildErrorPayload('El campo question o message es obligatorio.'), JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         $response = $this->canvasGenerationService->generate($canvasRequest);
 
-        return new JsonResponse($response->toArray() + [
-            'assistant' => $this->assistantName,
-        ]);
+        return new JsonResponse($response->toArray());
+    }
+
+    /**
+     * @return array{ok:bool, message:string, imageUrl:?string, imageKey:?string}
+     */
+    private function buildErrorPayload(string $message): array
+    {
+        return [
+            'ok' => false,
+            'message' => $message,
+            'imageUrl' => null,
+            'imageKey' => null,
+        ];
     }
 }

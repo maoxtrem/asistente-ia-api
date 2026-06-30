@@ -21,6 +21,21 @@ parameters:
     app.embedding_provider_kind: '%env(string:EMBEDDING_PROVIDER_KIND)%'
     app.chat_api_key: '%env(string:CHAT_API_KEY)%'
     app.embedding_api_key: '%env(string:EMBEDDING_API_KEY)%'
+    app.openai_api_key: '%env(string:OPENAI_API_KEY)%'
+    app.openai_image_provider_url: '%env(string:OPENAI_IMAGE_PROVIDER_URL)%'
+    app.openai_image_model: '%env(string:OPENAI_IMAGE_MODEL)%'
+    app.openai_image_size: '%env(string:OPENAI_IMAGE_SIZE)%'
+    app.openai_image_quality: '%env(string:OPENAI_IMAGE_QUALITY)%'
+    app.openai_image_output_format: '%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%'
+    app.openai_image_background: '%env(string:OPENAI_IMAGE_BACKGROUND)%'
+    app.minio_endpoint: '%env(string:MINIO_ENDPOINT)%'
+    app.minio_public_endpoint: '%env(string:MINIO_PUBLIC_ENDPOINT)%'
+    app.minio_region: '%env(string:MINIO_REGION)%'
+    app.minio_bucket: '%env(string:MINIO_BUCKET)%'
+    app.minio_access_key: '%env(string:MINIO_ACCESS_KEY)%'
+    app.minio_secret_key: '%env(string:MINIO_SECRET_KEY)%'
+    app.minio_use_path_style: '%env(bool:MINIO_USE_PATH_STYLE)%'
+    app.minio_verify_ssl: '%env(bool:MINIO_VERIFY_SSL)%'
 
 services:
     # default configuration for services in *this* file
@@ -54,6 +69,17 @@ services:
             $timeout: '%app.chat_timeout%'
             $apiKey: '%app.chat_api_key%'
         tags: ['app.chat_provider']
+
+    App\Service\Ai\Image\OpenAiImageGenerationProvider:
+        arguments:
+            $providerUrl: '%app.openai_image_provider_url%'
+            $model: '%app.openai_image_model%'
+            $apiKey: '%app.openai_api_key%'
+            $fallbackApiKey: '%app.chat_api_key%'
+            $size: '%app.openai_image_size%'
+            $quality: '%app.openai_image_quality%'
+            $outputFormat: '%app.openai_image_output_format%'
+            $background: '%app.openai_image_background%'
 
     App\Service\Ai\Chat\ChatProviderSelector:
         arguments:
@@ -106,14 +132,45 @@ services:
             $qdrantClient: '@App\Service\QdrantClient'
             $qdrantCollection: '%app.canvas_qdrant_collection%'
 
-    App\Service\CanvasGenerationService:
+    App\EventSubscriber\CanvasGenerationCompletedSubscriber:
         arguments:
-            $vectorContextRetriever: '@app.canvas_vector_context_retriever'
             $indexDocumentProcessor: '@app.canvas_index_document_processor'
 
     App\Service\ChatHistoryRepository:
         arguments:
             $databaseUrl: '%app.database_url%'
+
+    Aws\S3\S3Client:
+        arguments:
+            $args:
+                version: 'latest'
+                region: '%app.minio_region%'
+                endpoint: '%app.minio_endpoint%'
+                use_path_style_endpoint: '%app.minio_use_path_style%'
+                credentials:
+                    key: '%app.minio_access_key%'
+                    secret: '%app.minio_secret_key%'
+                http:
+                    verify: '%app.minio_verify_ssl%'
+
+    app.minio_public_client:
+        class: Aws\S3\S3Client
+        arguments:
+            $args:
+                version: 'latest'
+                region: '%app.minio_region%'
+                endpoint: '%app.minio_public_endpoint%'
+                use_path_style_endpoint: '%app.minio_use_path_style%'
+                credentials:
+                    key: '%app.minio_access_key%'
+                    secret: '%app.minio_secret_key%'
+                http:
+                    verify: '%app.minio_verify_ssl%'
+
+    App\Service\Storage\MinioStorage:
+        arguments:
+            $bucket: '%app.minio_bucket%'
+            $publicClient: '@app.minio_public_client'
 
     App\Controller\Api\ChatController:
         arguments:
@@ -124,10 +181,6 @@ services:
             $assistantName: '%app.assistant_name%'
 
     App\Controller\Api\HealthController:
-        arguments:
-            $assistantName: '%app.assistant_name%'
-
-    App\Controller\Api\CanvasGenerationController:
         arguments:
             $assistantName: '%app.assistant_name%'
 

@@ -32,20 +32,25 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
     {
         try {
             $input = new ChatPromptInput($message, $context, $tenant, $locale, $history, $vectorContext, $qdrantHealth, $extraInstruction);
+            $messages = [
+                [
+                    'role' => 'system',
+                    'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
+                ],
+            ];
+
+            if (trim((string) $userPrompt) !== '') {
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
+                ];
+            }
+
             $response = $this->httpClient->request('POST', $this->buildOpenAiCompatibleEndpoint('/chat/completions'), [
                 'json' => [
                     'model' => $this->chatModel,
                     'stream' => false,
-                    'messages' => [
-                        [
-                            'role' => 'system',
-                            'content' => $systemPrompt ?? $this->promptBuilder->buildSystemPrompt(),
-                        ],
-                        [
-                            'role' => 'user',
-                            'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
-                        ],
-                    ],
+                    'messages' => $messages,
                 ],
                 'headers' => [
                     'Authorization' => 'Bearer ' . $this->requireApiKey($this->apiKey),
