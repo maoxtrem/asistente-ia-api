@@ -35,7 +35,7 @@ final class CanvasGenerationService
             $this->minioStorage->upload($objectKey, $imageBytes, 'image/png', [
                 'tenant' => $request->tenant,
                 'locale' => $request->locale,
-                'message_hash' => sha1($request->message),
+                'message-hash' => sha1($request->message),
             ]);
 
             $canvasResponse = new CanvasGenerationResponse(
