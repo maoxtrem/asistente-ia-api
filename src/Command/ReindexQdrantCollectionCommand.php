@@ -71,6 +71,7 @@ final class ReindexQdrantCollectionCommand extends Command
                 break;
             }
 
+            $batch = [];
             foreach ($points as $point) {
                 $pointId = (string) ($point['id'] ?? '');
                 $payload = is_array($point['payload'] ?? null) ? $point['payload'] : [];
@@ -87,11 +88,28 @@ final class ReindexQdrantCollectionCommand extends Command
                         $vectorSize = count($vector);
                         $this->qdrantClient->ensureCollection($targetCollection, $vectorSize);
                     }
-                    $this->qdrantClient->upsertPoint($targetCollection, $pointId, $vector, $payload);
-                    $totalProcessed++;
+                    $batch[] = [
+                        'id' => $pointId,
+                        'vector' => $vector,
+                        'payload' => $payload,
+                    ];
                 } catch (\Throwable $exception) {
                     $totalErrors++;
                     $io->warning(sprintf('Punto %s: %s', $pointId, $exception->getMessage()));
+                }
+            }
+
+            if ($batch !== []) {
+                try {
+                    $this->qdrantClient->upsertPointsBatch($targetCollection, $batch);
+                    $totalProcessed += count($batch);
+                } catch (\Throwable $exception) {
+                    $totalErrors += count($batch);
+                    $io->warning(sprintf(
+                        'Lote de %d puntos: %s',
+                        count($batch),
+                        $exception->getMessage()
+                    ));
                 }
             }
 

@@ -36,12 +36,20 @@ parameters:
     app.minio_secret_key: '%env(string:MINIO_SECRET_KEY)%'
     app.minio_use_path_style: '%env(bool:MINIO_USE_PATH_STYLE)%'
     app.minio_verify_ssl: '%env(bool:MINIO_VERIFY_SSL)%'
+    app.default_retrieve_limit: 4
+    app.chat_prompt_max_history_items: 4
+    app.chat_prompt_max_vector_matches: 2
+    app.greeting_instruction: 'Respond to the greeting in a friendly, brief, natural way. Match the language of the user''s latest message. If the language is unclear, use the application locale as fallback. Do not mention internal or technical details.'
+    app.clarification_instruction: 'You do not have enough information to answer with confidence. Respond briefly, ask for one concrete clarification, and match the language of the user''s latest message. If the language is unclear, use the application locale as fallback. Do not mention technical or internal errors.'
 
 services:
     # default configuration for services in *this* file
     _defaults:
         autowire: true      # Automatically injects dependencies in your services.
         autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
+        bind:
+            $maxHistoryItems: '%env(int:AI_MAX_HISTORY_ITEMS)%'
+            $maxVectorMatches: '%env(int:AI_MAX_VECTOR_MATCHES)%'
 
     # makes classes in src/ available to be used as services
     # this creates a service per class whose id is the fully-qualified class name
@@ -52,8 +60,7 @@ services:
         arguments:
             $qdrantUrl: '%app.qdrant_url%'
 
-    App\Service\Ai\Chat\ChatPromptBuilder:
-        arguments: []
+    App\Service\Ai\Chat\ChatPromptBuilder: ~
 
     App\Service\Ai\Chat\LocalJsonChatProvider:
         arguments:
@@ -112,6 +119,12 @@ services:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
             $allowedDocumentKinds: ['chat_knowledge', 'module']
+
+    App\Service\AssistantResponder:
+        arguments:
+            $defaultRetrieveLimit: '%app.default_retrieve_limit%'
+            $greetingInstruction: '%app.greeting_instruction%'
+            $clarificationInstruction: '%app.clarification_instruction%'
 
     app.canvas_vector_context_retriever:
         class: App\Service\VectorContextRetriever
@@ -174,6 +187,7 @@ services:
 
     App\Controller\Api\ChatController:
         arguments:
+            $maxHistoryItems: '%app.chat_prompt_max_history_items%'
             $assistantName: '%app.assistant_name%'
 
     App\Controller\Api\BootstrapController:

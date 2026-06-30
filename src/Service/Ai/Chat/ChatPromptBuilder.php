@@ -10,8 +10,11 @@ use RuntimeException;
 
 final class ChatPromptBuilder
 {
-    private const MAX_HISTORY_ITEMS = 4;
-    private const MAX_VECTOR_MATCHES = 2;
+    public function __construct(
+        private readonly int $maxHistoryItems = 4,
+        private readonly int $maxVectorMatches = 2,
+    ) {
+    }
 
     public function buildSystemPrompt(): string
     {
@@ -49,7 +52,7 @@ PROMPT;
                 'role' => (string) ($item['role'] ?? ''),
                 'content' => (string) ($item['content'] ?? ''),
             ];
-        }, array_slice($history, -self::MAX_HISTORY_ITEMS)));
+        }, array_slice($history, -$this->maxHistoryItems)));
     }
 
     /**
@@ -70,7 +73,7 @@ PROMPT;
                 'type' => $document['type'] ?? '',
                 'tenant' => $document['tenant'] ?? '',
             ];
-        }, array_slice($matches, 0, self::MAX_VECTOR_MATCHES)));
+        }, array_slice($matches, 0, $this->maxVectorMatches)));
     }
 
     /**

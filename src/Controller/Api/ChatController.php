@@ -12,6 +12,7 @@ use Throwable;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
+use Psr\Log\LoggerInterface;
 
 final class ChatController
 {
@@ -19,9 +20,10 @@ final class ChatController
         private readonly QdrantClient $qdrantClient,
         private readonly AssistantResponder $assistantResponder,
         private readonly ChatHistoryRepository $chatHistoryRepository,
+        private readonly int $maxHistoryItems,
+        private readonly LoggerInterface $logger,
         private readonly string $assistantName,
-    ) {
-    }
+    ) {}
 
     #[Route('/api/chat', name: 'api_chat', methods: ['POST'])]
     public function __invoke(Request $request): JsonResponse
@@ -40,6 +42,7 @@ final class ChatController
         $clientKey = trim((string) ($payload['client_key'] ?? ''));
         $tenant = trim((string) ($payload['tenant'] ?? ''));
         $locale = $this->normalizeLocale($payload['locale'] ?? '');
+        $requestContext = is_array($payload['context'] ?? null) ? $payload['context'] : [];
 
         if ($message === '') {
             return new JsonResponse([
@@ -57,20 +60,23 @@ final class ChatController
 
         $conversationId = $this->resolveConversationId($conversationId, $tenant, $clientKey);
         $this->chatHistoryRepository->ensureConversation($conversationId, $tenant);
-        $history = $this->chatHistoryRepository->fetchMessages($conversationId, $tenant, 12);
+        $history = $this->chatHistoryRepository->fetchMessages($conversationId, $tenant, max(1, $this->maxHistoryItems + 1));
         $this->chatHistoryRepository->appendMessage($conversationId, $tenant, 'user', $message, [
             'client_key' => $clientKey,
             'locale' => $locale,
-            'context' => is_array($payload['context'] ?? null) ? $payload['context'] : [],
+            'context' => $requestContext,
             'metadata' => is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
         ]);
 
-        $qdrantHealth = $this->qdrantClient->health();
+        $qdrantHealth = [
+            'ok' => true,
+            'skipped' => true,
+        ];
 
         try {
             $assistantReply = $this->assistantResponder->respond(
                 message: $message,
-                context: is_array($payload['context'] ?? null) ? $payload['context'] : [],
+                context: $requestContext,
                 tenant: $tenant,
                 locale: $locale,
                 conversationId: $conversationId,
@@ -83,12 +89,16 @@ final class ChatController
                 'message' => $exception->getMessage(),
             ], JsonResponse::HTTP_BAD_GATEWAY);
         } catch (Throwable $exception) {
+            $this->logger->error('No fue posible generar la respuesta del asistente.', [
+                'exception' => $exception,
+                'conversation_id' => $conversationId,
+                'tenant' => $tenant,
+                'client_key' => $clientKey,
+            ]);
+
             return new JsonResponse([
                 'status' => 'error',
-                'message' => 'No fue posible generar la respuesta del asistente.',
-                'raw' => [
-                    'error' => $exception->getMessage(),
-                ],
+                'message' => 'Ocurrió un error interno al procesar su solicitud.',
             ], JsonResponse::HTTP_BAD_GATEWAY);
         }
 
@@ -103,25 +113,25 @@ final class ChatController
 
         return new JsonResponse([
             'status' => 'success',
-                'data' => [
-                    'message' => $assistantReply['message'],
-                    'conversation_id' => $conversationId,
-                    'assistant' => $this->assistantName,
-                    'tenant' => $tenant,
-                    'client_key' => $clientKey,
-                    'message_locale' => $assistantReply['message_locale'] ?? 'unknown',
-                    'response_locale' => $assistantReply['response_locale'] ?? $locale,
-                    'links' => $assistantReply['links'],
-                    'intent' => $assistantReply['intent'],
-                    'context_note' => $assistantReply['context_note'],
-                    'sources' => $assistantReply['sources'],
-                    'qdrant' => $qdrantHealth,
-                    'bundle' => [
-                        'widget_url' => '/asistente-ia/widget',
-                        'vector_form_url' => '/asistente-ia/vectorial',
-                    ],
+            'data' => [
+                'message' => $assistantReply['message'],
+                'conversation_id' => $conversationId,
+                'assistant' => $this->assistantName,
+                'tenant' => $tenant,
+                'client_key' => $clientKey,
+                'message_locale' => $assistantReply['message_locale'] ?? 'unknown',
+                'response_locale' => $assistantReply['response_locale'] ?? $locale,
+                'links' => $assistantReply['links'],
+                'intent' => $assistantReply['intent'],
+                'context_note' => $assistantReply['context_note'],
+                'sources' => $assistantReply['sources'],
+                'qdrant' => $qdrantHealth,
+                'bundle' => [
+                    'widget_url' => '/asistente-ia/widget',
+                    'vector_form_url' => '/asistente-ia/vectorial',
                 ],
-            ]);
+            ],
+        ]);
     }
 
     private function resolveConversationId(string $conversationId, string $tenant, string $clientKey): string

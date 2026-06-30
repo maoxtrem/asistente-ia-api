@@ -11,6 +11,9 @@ final class AssistantResponder
     public function __construct(
         private readonly VectorContextRetriever $vectorContextRetriever,
         private readonly ChatProviderInterface $chatProvider,
+        private readonly int $defaultRetrieveLimit,
+        private readonly string $greetingInstruction,
+        private readonly string $clarificationInstruction,
     ) {
     }
 
@@ -44,7 +47,7 @@ final class AssistantResponder
             ];
         }
 
-        $vectorContext = $this->vectorContextRetriever->retrieve($message, $tenant, 2);
+        $vectorContext = $this->vectorContextRetriever->retrieve($message, $tenant, max(1, $this->defaultRetrieveLimit));
 
         if (($vectorContext['ok'] ?? false) !== true || ($vectorContext['matches'] ?? []) === []) {
             $aiMessage = $this->resolveClarificationMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth);
@@ -80,7 +83,7 @@ final class AssistantResponder
             $history,
             $promptVectorContext,
             $qdrantHealth,
-            $this->greetingInstruction()
+            $this->greetingInstruction
         );
     }
 
@@ -94,7 +97,7 @@ final class AssistantResponder
             $history,
             $vectorContext,
             $qdrantHealth,
-            $this->clarificationInstruction()
+            $this->clarificationInstruction
         );
     }
 
@@ -186,16 +189,6 @@ final class AssistantResponder
         return $value;
     }
 
-    private function greetingInstruction(): string
-    {
-        return 'Respond to the greeting in a friendly, brief, natural way. Match the language of the user’s latest message. If the language is unclear, use the application locale as fallback. Do not mention internal or technical details.';
-    }
-
-    private function clarificationInstruction(): string
-    {
-        return 'You do not have enough information to answer with confidence. Respond briefly, ask for one concrete clarification, and match the language of the user’s latest message. If the language is unclear, use the application locale as fallback. Do not mention technical or internal errors.';
-    }
-
     private function normalizeLocale(string $locale): string
     {
         $normalized = strtolower(trim($locale));
@@ -256,14 +249,33 @@ final class AssistantResponder
      */
     private function scoreLocale(string $normalizedMessage, array $hints): int
     {
-        $score = 0;
-
-        foreach ($hints as $hint) {
-            if ($hint !== '' && str_contains($normalizedMessage, $hint)) {
-                $score++;
-            }
+        $words = $this->tokenize($normalizedMessage);
+        if ($words === []) {
+            return 0;
         }
 
-        return $score;
+        $hintWords = [];
+        foreach ($hints as $hint) {
+            $hintWords = array_merge($hintWords, $this->tokenize($hint));
+        }
+
+        if ($hintWords === []) {
+            return 0;
+        }
+
+        return count(array_intersect($words, array_values(array_unique($hintWords))));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function tokenize(string $value): array
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return [];
+        }
+
+        return array_values(array_filter(explode(' ', $value), static fn (string $word): bool => $word !== ''));
     }
 }

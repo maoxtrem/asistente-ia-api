@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Service;
 
 use RuntimeException;
+use Symfony\Component\Uid\Uuid;
+use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -42,15 +44,57 @@ final class QdrantClient
     public function ensureCollection(string $collectionName, int $vectorSize): void
     {
         try {
-            $this->httpClient->request('PUT', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collectionName), [
+            $collectionUrl = rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collectionName);
+            $existsResponse = $this->httpClient->request('GET', $collectionUrl . '/exists');
+            try {
+                $existsPayload = $existsResponse->toArray(false);
+            } catch (ClientExceptionInterface $exception) {
+                if ($exception->getResponse()->getStatusCode() === 404) {
+                    $existsPayload = ['result' => ['exists' => false]];
+                } else {
+                    throw new RuntimeException(sprintf(
+                        'No fue posible verificar si la coleccion "%s" existe: %s',
+                        $collectionName,
+                        $this->extractQdrantErrorMessage($exception)
+                    ), 0, $exception);
+                }
+            }
+
+            if (($existsPayload['result']['exists'] ?? false) === true) {
+                return;
+            }
+
+            $response = $this->httpClient->request('PUT', $collectionUrl, [
                 'json' => [
                     'vectors' => [
                         'size' => $vectorSize,
                         'distance' => 'Cosine',
                     ],
                 ],
-            ])->getStatusCode();
-        } catch (ExceptionInterface $exception) {
+            ]);
+
+            $statusCode = $response->getStatusCode();
+            if ($statusCode < 400) {
+                return;
+            }
+
+            $body = strtolower($response->getContent(false));
+            if (str_contains($body, 'already exists') || str_contains($body, 'already_exist')) {
+                return;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Qdrant rechazo la creacion de la coleccion "%s" con estado HTTP %d: %s',
+                $collectionName,
+                $statusCode,
+                trim($body) !== '' ? trim($body) : 'sin cuerpo de respuesta'
+            ));
+        } catch (ClientExceptionInterface $exception) {
+            throw new RuntimeException(sprintf(
+                'No fue posible preparar la coleccion vectorial: %s',
+                $this->extractQdrantErrorMessage($exception)
+            ), 0, $exception);
+        } catch (ExceptionInterface|RuntimeException $exception) {
             throw new RuntimeException(sprintf('No fue posible preparar la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
         }
     }
@@ -60,20 +104,48 @@ final class QdrantClient
      */
     public function upsertPoint(string $collection, string $pointId, array $vector, array $payload): array
     {
+        return $this->upsertPointsBatch($collection, [
+            [
+                'id' => $pointId,
+                'vector' => $vector,
+                'payload' => $payload,
+            ],
+        ]);
+    }
+
+    /**
+     * @param array<int, array{id:string|int, vector:float[], payload:array<string, mixed>}> $points
+     */
+    public function upsertPointsBatch(string $collection, array $points): array
+    {
+        if ($points === []) {
+            return [
+                'result' => [
+                    'points' => [],
+                ],
+                'status' => 'ok',
+            ];
+        }
+
         try {
-            $response = $this->httpClient->request('PUT', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points', [
+            $response = $this->httpClient->request('PUT', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points?wait=true', [
                 'json' => [
-                    'points' => [
-                        [
-                            'id' => $pointId,
-                            'vector' => $vector,
-                            'payload' => $payload,
-                        ],
-                    ],
+                    'points' => array_values(array_map(static function (array $point): array {
+                        return [
+                            'id' => $point['id'],
+                            'vector' => array_values($point['vector']),
+                            'payload' => $point['payload'],
+                        ];
+                    }, $points)),
                 ],
             ]);
 
             return $response->toArray(false);
+        } catch (ClientExceptionInterface $exception) {
+            throw new RuntimeException(sprintf(
+                'No fue posible guardar el punto vectorial: %s',
+                $this->extractQdrantErrorMessage($exception)
+            ), 0, $exception);
         } catch (ExceptionInterface $exception) {
             throw new RuntimeException(sprintf('No fue posible guardar el punto vectorial: %s', $exception->getMessage()), 0, $exception);
         }
@@ -82,11 +154,16 @@ final class QdrantClient
     public function deletePoint(string $collection, string $pointId): void
     {
         try {
-            $this->httpClient->request('POST', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points/delete', [
+            $this->httpClient->request('POST', rtrim($this->qdrantUrl, '/') . '/collections/' . rawurlencode($collection) . '/points/delete?wait=true', [
                 'json' => [
                     'points' => [$pointId],
                 ],
             ])->getStatusCode();
+        } catch (ClientExceptionInterface $exception) {
+            throw new RuntimeException(sprintf(
+                'No fue posible eliminar el punto vectorial: %s',
+                $this->extractQdrantErrorMessage($exception)
+            ), 0, $exception);
         } catch (ExceptionInterface $exception) {
             throw new RuntimeException(sprintf('No fue posible eliminar el punto vectorial: %s', $exception->getMessage()), 0, $exception);
         }
@@ -144,6 +221,11 @@ final class QdrantClient
             ]);
 
             $payload = $response->toArray(false);
+        } catch (ClientExceptionInterface $exception) {
+            throw new RuntimeException(sprintf(
+                'No fue posible consultar la coleccion vectorial: %s',
+                $this->extractQdrantErrorMessage($exception)
+            ), 0, $exception);
         } catch (ExceptionInterface $exception) {
             throw new RuntimeException(sprintf('No fue posible consultar la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
         }
@@ -219,6 +301,11 @@ final class QdrantClient
             ]);
 
             $payload = $response->toArray(false);
+        } catch (ClientExceptionInterface $exception) {
+            throw new RuntimeException(sprintf(
+                'No fue posible recorrer la coleccion vectorial: %s',
+                $this->extractQdrantErrorMessage($exception)
+            ), 0, $exception);
         } catch (ExceptionInterface $exception) {
             throw new RuntimeException(sprintf('No fue posible recorrer la coleccion vectorial: %s', $exception->getMessage()), 0, $exception);
         }
@@ -266,16 +353,39 @@ final class QdrantClient
 
     public function stablePointId(string $seed): string
     {
-        $hash = sha1($seed);
+        // Genera un UUID v5 basado en un namespace predefinido y tu semilla (seed)
+        $namespace = Uuid::fromString(Uuid::NAMESPACE_URL);
 
-        return sprintf(
-            '%s-%s-%s-%s-%s',
-            substr($hash, 0, 8),
-            substr($hash, 8, 4),
-            sprintf('%04x', (hexdec(substr($hash, 12, 4)) & 0x0fff) | 0x5000),
-            sprintf('%04x', (hexdec(substr($hash, 16, 4)) & 0x3fff) | 0x8000),
-            substr($hash, 20, 12)
-        );
+        return Uuid::v5($namespace, $seed)->toRfc4122();
+    }
+
+    private function extractQdrantErrorMessage(ClientExceptionInterface $exception): string
+    {
+        $response = $exception->getResponse();
+        $statusCode = $response->getStatusCode();
+        $body = trim($response->getContent(false));
+
+        if ($body === '') {
+            return sprintf('HTTP %d: %s', $statusCode, $exception->getMessage());
+        }
+
+        $decoded = json_decode($body, true);
+        if (is_array($decoded)) {
+            $candidates = [
+                $decoded['status']['error'] ?? null,
+                $decoded['error'] ?? null,
+                $decoded['detail'] ?? null,
+                $decoded['message'] ?? null,
+            ];
+
+            foreach ($candidates as $candidate) {
+                if (is_string($candidate) && trim($candidate) !== '') {
+                    return trim($candidate);
+                }
+            }
+        }
+
+        return $body;
     }
 
     /**
