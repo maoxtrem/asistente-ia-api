@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Contract\ChatProviderInterface;
+use App\Service\Ai\Chat\ChatPromptBuilder;
+use JsonException;
 
 final class AssistantResponder
 {
     public function __construct(
         private readonly VectorContextRetriever $vectorContextRetriever,
         private readonly ChatProviderInterface $chatProvider,
+        private readonly ChatPromptBuilder $promptBuilder,
         private readonly int $defaultRetrieveLimit,
         private readonly string $greetingInstruction,
         private readonly string $clarificationInstruction,
@@ -47,17 +50,43 @@ final class AssistantResponder
             ];
         }
 
-        $vectorContext = $this->vectorContextRetriever->retrieve(
-            $message,
-            $tenant,
-            max(1, $this->defaultRetrieveLimit),
-            $detectedMessageLocale
-        );
+        $searchPlan = $this->planSearch($message, $context, $tenant, $appLocale, $responseLocale, $history, $qdrantHealth);
+        $plannedSearchQuery = trim((string) ($searchPlan['search_query'] ?? ''));
+        $plannedResponseLocale = $this->normalizeLocale((string) ($searchPlan['response_locale'] ?? $responseLocale));
 
-        if (($vectorContext['ok'] ?? false) !== true || ($vectorContext['matches'] ?? []) === []) {
-            $aiMessage = $this->resolveClarificationMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth);
+        if ($plannedSearchQuery === '') {
+            $plannedSearchQuery = $message;
+        }
+
+        if ($plannedResponseLocale !== '') {
+            $responseLocale = $plannedResponseLocale;
+            $context['response_locale'] = $responseLocale;
+        }
+
+        $context['search_plan'] = $searchPlan;
+
+        if (($searchPlan['should_search'] ?? true) !== true) {
+            $vectorContext = [
+                'ok' => true,
+                'collection' => null,
+                'tenant' => $tenant,
+                'search_trace' => [],
+                'matches' => [],
+                'search_plan' => $searchPlan,
+            ];
+            $aiMessage = $this->resolveAiMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth, 'Usa la planificación de búsqueda como referencia, pero responde sin depender del RAG.');
         } else {
-            $aiMessage = $this->resolveAiMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth, '');
+            $vectorContext = $this->vectorContextRetriever->retrieve(
+                $plannedSearchQuery,
+                $tenant,
+                max(1, $this->defaultRetrieveLimit)
+            );
+
+            if (($vectorContext['ok'] ?? false) !== true || ($vectorContext['matches'] ?? []) === []) {
+                $aiMessage = $this->resolveClarificationMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth);
+            } else {
+                $aiMessage = $this->resolveAiMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth, '');
+            }
         }
 
         return [
@@ -145,6 +174,111 @@ final class AssistantResponder
         }
 
         return array_values($links);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function planSearch(string $message, array $context, string $tenant, string $appLocale, string $responseLocale, array $history, array $qdrantHealth): array
+    {
+        try {
+            $response = $this->chatProvider->chat(
+                message: $message,
+                context: $context,
+                tenant: $tenant,
+                locale: $appLocale,
+                history: $history,
+                vectorContext: ['ok' => true, 'collection' => null, 'tenant' => $tenant, 'matches' => []],
+                qdrantHealth: $qdrantHealth,
+                extraInstruction: 'Devuelve solo JSON válido.',
+                systemPrompt: $this->promptBuilder->buildSearchPlanSystemPrompt(),
+                userPrompt: $this->promptBuilder->buildSearchPlanUserPrompt($message, $context, $tenant, $appLocale, $history)
+            );
+
+            $content = trim((string) ($response['content'] ?? ''));
+            $decoded = $this->extractJson($content);
+            if (is_array($decoded)) {
+                return $this->normalizeSearchPlan($decoded, $appLocale, $responseLocale);
+            }
+        } catch (\Throwable) {
+            // Si el planner falla, seguimos con un plan conservador.
+        }
+
+        return $this->normalizeSearchPlan([], $appLocale, $responseLocale);
+    }
+
+    /**
+     * @param array<string, mixed> $plan
+     * @return array<string, mixed>
+     */
+    private function normalizeSearchPlan(array $plan, string $appLocale, string $fallbackResponseLocale): array
+    {
+        $responseLocale = $this->normalizeLocale((string) ($plan['response_locale'] ?? $fallbackResponseLocale));
+        if ($responseLocale === '') {
+            $responseLocale = $fallbackResponseLocale !== '' ? $fallbackResponseLocale : $appLocale;
+        }
+
+        $searchLocale = $this->normalizeLocale((string) ($plan['search_locale'] ?? 'es'));
+        if ($searchLocale === '') {
+            $searchLocale = 'es';
+        }
+
+        $searchQuery = trim((string) ($plan['search_query'] ?? ''));
+        $shouldSearch = $this->normalizeBool($plan['should_search'] ?? true);
+        $reason = trim((string) ($plan['reason'] ?? ''));
+
+        return [
+            'should_search' => $shouldSearch,
+            'search_query' => $searchQuery,
+            'search_locale' => $searchLocale,
+            'response_locale' => $responseLocale,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function extractJson(string $content): ?array
+    {
+        $content = trim($content);
+        if ($content === '') {
+            return null;
+        }
+
+        $content = preg_replace('/^```(?:json)?\s*/i', '', $content) ?? $content;
+        $content = preg_replace('/\s*```$/', '', $content) ?? $content;
+
+        $start = strpos($content, '{');
+        $end = strrpos($content, '}');
+        if ($start === false || $end === false || $end <= $start) {
+            return null;
+        }
+
+        $json = substr($content, $start, $end - $start + 1);
+
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private function normalizeBool(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value === 1;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+
+        return in_array($normalized, ['1', 'true', 'yes', 'on', 'si', 'sí'], true);
     }
 
     private function isGreeting(string $message): bool

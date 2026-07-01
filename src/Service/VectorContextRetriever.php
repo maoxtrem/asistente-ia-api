@@ -5,14 +5,12 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Contract\EmbeddingProviderInterface;
-use App\Contract\ChatProviderInterface;
 use RuntimeException;
 
 final class VectorContextRetriever
 {
     public function __construct(
         private readonly EmbeddingProviderInterface $embeddingClient,
-        private readonly ChatProviderInterface $chatProvider,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
         private readonly array $allowedDocumentKinds,
@@ -36,11 +34,12 @@ final class VectorContextRetriever
      *   error?: string
      * }
      */
-    public function retrieve(string $message, ?string $tenant = null, int $limit = 3, ?string $messageLocale = null): array
+    public function retrieve(string $message, ?string $tenant = null, int $limit = 3): array
     {
         try {
+            $vector = $this->embeddingClient->embed($message);
             $searchTrace = [];
-            $matches = $this->searchAcrossTenants($message, $tenant, $limit, $messageLocale, $searchTrace);
+            $matches = $this->searchAcrossTenants($vector, $tenant, $limit, $searchTrace);
         } catch (RuntimeException $exception) {
             return [
                 'ok' => false,
@@ -78,60 +77,46 @@ final class VectorContextRetriever
      * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
-    private function searchAcrossTenants(string $message, ?string $tenant, int $limit, ?string $messageLocale, array &$searchTrace = []): array
+    private function searchAcrossTenants(array $vector, ?string $tenant, int $limit, array &$searchTrace = []): array
     {
         $tenant = trim((string) ($tenant ?? ''));
-        $merged = [];
-        $queries = [$message];
+        $searchLimit = max(1, $limit * 4);
+        $shouldFilters = [];
 
-        $messageLocale = trim(strtolower((string) ($messageLocale ?? '')));
-        if ($messageLocale !== '' && $messageLocale !== 'unknown' && !str_starts_with($messageLocale, 'es')) {
-            $translatedMessage = $this->translateSearchQueryToSpanish($message, $messageLocale);
-            if ($translatedMessage !== '' && mb_strtolower($translatedMessage) !== mb_strtolower($message)) {
-                $queries[] = $translatedMessage;
-            }
+        if ($tenant !== '') {
+            $shouldFilters[] = ['key' => 'tenant', 'value' => $tenant];
+            $shouldFilters[] = ['key' => 'tenant', 'value' => 'global'];
+            $shouldFilters[] = ['key' => 'is_global', 'value' => true];
         }
 
-        foreach (array_values(array_unique(array_filter($queries, static fn (string $query): bool => trim($query) !== ''))) as $index => $query) {
-            $vector = $this->embeddingClient->embed($query);
-            $searchLimit = max(1, $limit * 4);
-            $shouldFilters = [];
+        $results = $this->qdrantClient->searchPoints(
+            $this->qdrantCollection,
+            $vector,
+            $searchLimit,
+            null,
+            [],
+            $shouldFilters
+        );
 
-            if ($tenant !== '') {
-                $shouldFilters[] = ['key' => 'tenant', 'value' => $tenant];
-                $shouldFilters[] = ['key' => 'tenant', 'value' => 'global'];
-                $shouldFilters[] = ['key' => 'is_global', 'value' => true];
+        $searchTrace[] = [
+            'tenant' => $tenant !== '' ? $tenant : null,
+            'label' => $tenant !== '' ? 'tenant_global_is_global' : 'all',
+            'count' => count($results),
+        ];
+
+        $merged = [];
+        foreach ($results as $result) {
+            if (!$this->matchesDocumentKind($result)) {
+                continue;
             }
 
-            $results = $this->qdrantClient->searchPoints(
-                $this->qdrantCollection,
-                $vector,
-                $searchLimit,
-                null,
-                [],
-                $shouldFilters
-            );
+            $dedupeKey = $this->matchKey($result);
+            if ($dedupeKey === '') {
+                continue;
+            }
 
-            $searchTrace[] = [
-                'tenant' => $tenant !== '' ? $tenant : null,
-                'label' => $index === 0 ? 'original' : 'translated_es',
-                'query' => $query,
-                'count' => count($results),
-            ];
-
-            foreach ($results as $result) {
-                if (!$this->matchesDocumentKind($result)) {
-                    continue;
-                }
-
-                $dedupeKey = $this->matchKey($result);
-                if ($dedupeKey === '') {
-                    continue;
-                }
-
-                if (!isset($merged[$dedupeKey]) || $result['score'] > $merged[$dedupeKey]['score']) {
-                    $merged[$dedupeKey] = $result;
-                }
+            if (!isset($merged[$dedupeKey]) || $result['score'] > $merged[$dedupeKey]['score']) {
+                $merged[$dedupeKey] = $result;
             }
         }
 
@@ -196,42 +181,5 @@ final class VectorContextRetriever
         }
 
         return array_values(array_unique($kinds));
-    }
-
-    private function translateSearchQueryToSpanish(string $message, string $messageLocale): string
-    {
-        $systemPrompt = <<<'PROMPT'
-Eres un traductor especializado en consultas de búsqueda para un sistema empresarial.
-Traduce la consulta al español neutro.
-Devuelve solo el texto traducido, sin comillas, sin explicaciones y sin añadir información nueva.
-PROMPT;
-
-        $userPrompt = sprintf(
-            "Idioma de origen: %s\nConsulta: %s",
-            $messageLocale,
-            $message
-        );
-
-        try {
-            $response = $this->chatProvider->chat(
-                message: $message,
-                context: [],
-                tenant: '',
-                locale: 'es',
-                history: [],
-                vectorContext: ['ok' => true, 'collection' => $this->qdrantCollection, 'matches' => []],
-                qdrantHealth: ['ok' => true],
-                extraInstruction: 'Traduce la consulta al español neutro.',
-                systemPrompt: $systemPrompt,
-                userPrompt: $userPrompt
-            );
-        } catch (\Throwable) {
-            return '';
-        }
-
-        $translated = trim((string) ($response['content'] ?? ''));
-        $translated = trim($translated, " \t\n\r\0\x0B\"'");
-
-        return $translated;
     }
 }
