@@ -39,8 +39,8 @@ parameters:
     app.default_retrieve_limit: 4
     app.chat_prompt_max_history_items: 4
     app.chat_prompt_max_vector_matches: 2
-    app.greeting_instruction: 'Respond to the greeting in a friendly, brief, natural way. Match the language of the user''s latest message. If the language is unclear, use the application locale as fallback. Do not mention internal or technical details.'
-    app.clarification_instruction: 'You do not have enough information to answer with confidence. Respond briefly, ask for one concrete clarification, and match the language of the user''s latest message. If the language is unclear, use the application locale as fallback. Do not mention technical or internal errors.'
+    app.greeting_instruction: 'Responde al saludo de forma amable, breve y natural. ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones detalles internos ni técnicos.'
+    app.clarification_instruction: 'No tienes suficiente información para responder con confianza. Responde brevemente, pide una sola aclaración concreta y ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones errores técnicos ni internos.'
 
 services:
     # default configuration for services in *this* file
@@ -48,8 +48,8 @@ services:
         autowire: true      # Automatically injects dependencies in your services.
         autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
         bind:
-            $maxHistoryItems: '%env(int:AI_MAX_HISTORY_ITEMS)%'
-            $maxVectorMatches: '%env(int:AI_MAX_VECTOR_MATCHES)%'
+            $maxHistoryItems: '%app.chat_prompt_max_history_items%'
+            $maxVectorMatches: '%app.chat_prompt_max_vector_matches%'
 
     # makes classes in src/ available to be used as services
     # this creates a service per class whose id is the fully-qualified class name
@@ -201,6 +201,10 @@ services:
     App\Command\ReindexQdrantCollectionCommand:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
+
+    App\Command\InitDatabaseCommand:
+        arguments:
+            $databaseUrl: '%app.database_url%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

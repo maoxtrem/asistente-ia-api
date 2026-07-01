@@ -97,7 +97,7 @@ final class FeedbackLearningService
                 $indexResponse = $this->indexDocumentProcessor->process($document);
                 $indexedPointId = $indexResponse->pointId;
                 $indexedCollection = $indexResponse->collection;
-                $indexedAt = (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+                $indexedAt = $this->utcNow();
                 $analysis['indexed_point_id'] = $indexedPointId;
                 $analysis['indexed_at'] = $indexedAt;
             } catch (Throwable $exception) {
@@ -363,5 +363,10 @@ final class FeedbackLearningService
         $normalized = strtolower(trim((string) $value));
 
         return in_array($normalized, ['1', 'true', 'yes', 'on', 'si', 'sí'], true);
+    }
+
+    private function utcNow(): string
+    {
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
     }
 }

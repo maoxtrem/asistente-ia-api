@@ -173,7 +173,7 @@ final class QdrantClient
      * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
-    public function searchPoints(string $collection, array $vector, int $limit = 5, ?string $tenant = null, array $matchFilters = []): array
+    public function searchPoints(string $collection, array $vector, int $limit = 5, ?string $tenant = null, array $matchFilters = [], array $shouldFilters = []): array
     {
         $json = [
             'vector' => array_values($vector),
@@ -182,37 +182,9 @@ final class QdrantClient
             'with_vector' => false,
         ];
 
-        $must = [];
-        $tenant = trim((string) ($tenant ?? ''));
-        if ($tenant !== '') {
-            $must[] = [
-                'key' => 'tenant',
-                'match' => [
-                    'value' => $tenant,
-                ],
-            ];
-        }
-
-        foreach ($matchFilters as $key => $value) {
-            $key = trim((string) $key);
-            $value = $this->normalizeMatchFilterValue($value);
-
-            if ($key === '' || $value === null || $value === '') {
-                continue;
-            }
-
-            $must[] = [
-                'key' => $key,
-                'match' => [
-                    'value' => $value,
-                ],
-            ];
-        }
-
-        if ($must !== []) {
-            $json['filter'] = [
-                'must' => $must,
-            ];
+        $filter = $this->buildFilter($tenant, $matchFilters, $shouldFilters);
+        if ($filter !== []) {
+            $json['filter'] = $filter;
         }
 
         try {
@@ -262,37 +234,9 @@ final class QdrantClient
             $json['offset'] = $offset;
         }
 
-        $must = [];
-        $tenant = trim((string) ($tenant ?? ''));
-        if ($tenant !== '') {
-            $must[] = [
-                'key' => 'tenant',
-                'match' => [
-                    'value' => $tenant,
-                ],
-            ];
-        }
-
-        foreach ($matchFilters as $key => $value) {
-            $key = trim((string) $key);
-            $value = $this->normalizeMatchFilterValue($value);
-
-            if ($key === '' || $value === null || $value === '') {
-                continue;
-            }
-
-            $must[] = [
-                'key' => $key,
-                'match' => [
-                    'value' => $value,
-                ],
-            ];
-        }
-
-        if ($must !== []) {
-            $json['filter'] = [
-                'must' => $must,
-            ];
+        $filter = $this->buildFilter($tenant, $matchFilters);
+        if ($filter !== []) {
+            $json['filter'] = $filter;
         }
 
         try {
@@ -349,6 +293,78 @@ final class QdrantClient
         }
 
         return (string) $value;
+    }
+
+    /**
+     * @param array<string, mixed> $matchFilters
+     * @param array<int, array{key:string, value:mixed}> $shouldFilters
+     * @return array<string, mixed>
+     */
+    private function buildFilter(?string $tenant, array $matchFilters = [], array $shouldFilters = []): array
+    {
+        $must = [];
+        $should = [];
+
+        $tenant = trim((string) ($tenant ?? ''));
+        if ($tenant !== '') {
+            $clause = $this->buildMatchClause('tenant', $tenant);
+            if ($clause !== null) {
+                $must[] = $clause;
+            }
+        }
+
+        foreach ($matchFilters as $key => $value) {
+            $clause = $this->buildMatchClause((string) $key, $value);
+            if ($clause !== null) {
+                $must[] = $clause;
+            }
+        }
+
+        foreach ($shouldFilters as $filter) {
+            if (!is_array($filter)) {
+                continue;
+            }
+
+            $clause = $this->buildMatchClause(
+                (string) ($filter['key'] ?? ''),
+                $filter['value'] ?? null,
+            );
+
+            if ($clause !== null) {
+                $should[] = $clause;
+            }
+        }
+
+        $filter = [];
+        if ($must !== []) {
+            $filter['must'] = $must;
+        }
+
+        if ($should !== []) {
+            $filter['should'] = $should;
+        }
+
+        return $filter;
+    }
+
+    /**
+     * @return array{key:string, match:array{value:mixed}}|null
+     */
+    private function buildMatchClause(string $key, mixed $value): ?array
+    {
+        $key = trim($key);
+        $value = $this->normalizeMatchFilterValue($value);
+
+        if ($key === '' || $value === null || $value === '') {
+            return null;
+        }
+
+        return [
+            'key' => $key,
+            'match' => [
+                'value' => $value,
+            ],
+        ];
     }
 
     public function stablePointId(string $seed): string

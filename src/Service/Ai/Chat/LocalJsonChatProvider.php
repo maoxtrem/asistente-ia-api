@@ -46,10 +46,15 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
                 ],
             ];
 
-            if (trim((string) $userPrompt) !== '') {
+            $resolvedUserPrompt = trim((string) ($userPrompt ?? ''));
+            if ($resolvedUserPrompt === '') {
+                $resolvedUserPrompt = $this->promptBuilder->buildUserPrompt($input);
+            }
+
+            if ($resolvedUserPrompt !== '') {
                 $messages[] = [
                     'role' => 'user',
-                    'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
+                    'content' => $resolvedUserPrompt,
                 ];
             }
 

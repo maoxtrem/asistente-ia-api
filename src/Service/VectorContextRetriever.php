@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Contract\EmbeddingProviderInterface;
+use App\Contract\ChatProviderInterface;
 use RuntimeException;
 
 final class VectorContextRetriever
 {
     public function __construct(
         private readonly EmbeddingProviderInterface $embeddingClient,
+        private readonly ChatProviderInterface $chatProvider,
         private readonly QdrantClient $qdrantClient,
         private readonly string $qdrantCollection,
         private readonly array $allowedDocumentKinds,
@@ -34,12 +36,11 @@ final class VectorContextRetriever
      *   error?: string
      * }
      */
-    public function retrieve(string $message, ?string $tenant = null, int $limit = 3): array
+    public function retrieve(string $message, ?string $tenant = null, int $limit = 3, ?string $messageLocale = null): array
     {
         try {
-            $vector = $this->embeddingClient->embed($message);
             $searchTrace = [];
-            $matches = $this->searchAcrossTenants($vector, $tenant, $limit, $searchTrace);
+            $matches = $this->searchAcrossTenants($message, $tenant, $limit, $messageLocale, $searchTrace);
         } catch (RuntimeException $exception) {
             return [
                 'ok' => false,
@@ -58,9 +59,6 @@ final class VectorContextRetriever
             'matches' => array_map(static function (array $match): array {
                 $payload = is_array($match['payload'] ?? null) ? $match['payload'] : [];
                 $indexedText = trim((string) ($payload['indexed_text'] ?? $payload['content'] ?? ''));
-                if ($indexedText !== '' && mb_strlen($indexedText) > 500) {
-                    $indexedText = mb_substr($indexedText, 0, 500) . '…';
-                }
 
                 return [
                     'id' => (string) ($match['id'] ?? ''),
@@ -80,84 +78,45 @@ final class VectorContextRetriever
      * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
-    private function searchAcrossTenants(array $vector, ?string $tenant, int $limit, array &$searchTrace = []): array
+    private function searchAcrossTenants(string $message, ?string $tenant, int $limit, ?string $messageLocale, array &$searchTrace = []): array
     {
         $tenant = trim((string) ($tenant ?? ''));
-        $queries = [];
-
-        if ($tenant !== '') {
-            $queries[] = [
-                'label' => $tenant,
-                'tenant' => $tenant,
-                'matchFilters' => [],
-            ];
-        }
-
-        if ($tenant !== 'global') {
-            $queries[] = [
-                'label' => 'global',
-                'tenant' => 'global',
-                'matchFilters' => [],
-            ];
-        }
-
-        $queries[] = [
-            'label' => 'is_global',
-            'tenant' => null,
-            'matchFilters' => ['is_global' => true],
-        ];
-
-        if ($tenant === '') {
-            $queries[] = [
-                'label' => 'all',
-                'tenant' => null,
-                'matchFilters' => [],
-            ];
-        }
-
         $merged = [];
-        foreach ($queries as $query) {
-            $results = $this->qdrantClient->searchPoints(
-                $this->qdrantCollection,
-                $vector,
-                $limit,
-                $query['tenant'],
-                $query['matchFilters']
-            );
-            $searchTrace[] = [
-                'tenant' => $query['tenant'],
-                'label' => $query['label'],
-                'count' => count($results),
-            ];
+        $queries = [$message];
 
-            foreach ($results as $result) {
-                if (!$this->matchesDocumentKind($result)) {
-                    continue;
-                }
-
-                $dedupeKey = $this->matchKey($result);
-                if ($dedupeKey === '') {
-                    continue;
-                }
-
-                if (!isset($merged[$dedupeKey])) {
-                    $merged[$dedupeKey] = $result;
-                    continue;
-                }
-
-                if ($result['score'] > $merged[$dedupeKey]['score']) {
-                    $merged[$dedupeKey] = $result;
-                }
+        $messageLocale = trim(strtolower((string) ($messageLocale ?? '')));
+        if ($messageLocale !== '' && $messageLocale !== 'unknown' && !str_starts_with($messageLocale, 'es')) {
+            $translatedMessage = $this->translateSearchQueryToSpanish($message, $messageLocale);
+            if ($translatedMessage !== '' && mb_strtolower($translatedMessage) !== mb_strtolower($message)) {
+                $queries[] = $translatedMessage;
             }
         }
 
-        if ($merged === [] && $tenant !== '') {
-            $results = $this->qdrantClient->searchPoints($this->qdrantCollection, $vector, $limit, null);
+        foreach (array_values(array_unique(array_filter($queries, static fn (string $query): bool => trim($query) !== ''))) as $index => $query) {
+            $vector = $this->embeddingClient->embed($query);
+            $searchLimit = max(1, $limit * 4);
+            $shouldFilters = [];
+
+            if ($tenant !== '') {
+                $shouldFilters[] = ['key' => 'tenant', 'value' => $tenant];
+                $shouldFilters[] = ['key' => 'tenant', 'value' => 'global'];
+                $shouldFilters[] = ['key' => 'is_global', 'value' => true];
+            }
+
+            $results = $this->qdrantClient->searchPoints(
+                $this->qdrantCollection,
+                $vector,
+                $searchLimit,
+                null,
+                [],
+                $shouldFilters
+            );
+
             $searchTrace[] = [
-                'tenant' => null,
-                'label' => 'fallback_all',
+                'tenant' => $tenant !== '' ? $tenant : null,
+                'label' => $index === 0 ? 'original' : 'translated_es',
+                'query' => $query,
                 'count' => count($results),
-                'fallback' => true,
             ];
 
             foreach ($results as $result) {
@@ -237,5 +196,42 @@ final class VectorContextRetriever
         }
 
         return array_values(array_unique($kinds));
+    }
+
+    private function translateSearchQueryToSpanish(string $message, string $messageLocale): string
+    {
+        $systemPrompt = <<<'PROMPT'
+Eres un traductor especializado en consultas de búsqueda para un sistema empresarial.
+Traduce la consulta al español neutro.
+Devuelve solo el texto traducido, sin comillas, sin explicaciones y sin añadir información nueva.
+PROMPT;
+
+        $userPrompt = sprintf(
+            "Idioma de origen: %s\nConsulta: %s",
+            $messageLocale,
+            $message
+        );
+
+        try {
+            $response = $this->chatProvider->chat(
+                message: $message,
+                context: [],
+                tenant: '',
+                locale: 'es',
+                history: [],
+                vectorContext: ['ok' => true, 'collection' => $this->qdrantCollection, 'matches' => []],
+                qdrantHealth: ['ok' => true],
+                extraInstruction: 'Traduce la consulta al español neutro.',
+                systemPrompt: $systemPrompt,
+                userPrompt: $userPrompt
+            );
+        } catch (\Throwable) {
+            return '';
+        }
+
+        $translated = trim((string) ($response['content'] ?? ''));
+        $translated = trim($translated, " \t\n\r\0\x0B\"'");
+
+        return $translated;
     }
 }

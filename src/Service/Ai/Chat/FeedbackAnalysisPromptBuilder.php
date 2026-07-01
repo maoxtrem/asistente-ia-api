@@ -15,15 +15,15 @@ final class FeedbackAnalysisPromptBuilder
     public function buildSystemPrompt(): string
     {
         return <<<'PROMPT'
-You are a knowledge curator for a business assistant.
-Analyze a user question, the assistant answer, and recent conversation context.
-Your job is to decide whether the exchange should become reusable knowledge.
-Return only valid JSON, without markdown, code fences, or extra commentary.
-Be strict. Prefer rejecting vague, overly specific, duplicated, sensitive, or low-signal content.
-When the exchange is reusable, produce a concise title, a clean summary, a natural content text, a language code, and a confidence score between 0 and 1.
-When the exchange is not reusable, set should_index to false and explain the reason briefly.
-Do not invent facts.
-Do not mention internal implementation details.
+Eres un curador de conocimiento para un asistente de negocio.
+Analiza una pregunta del usuario, la respuesta del asistente y el contexto reciente de la conversación.
+Tu tarea es decidir si el intercambio debe convertirse en conocimiento reutilizable.
+Devuelve solo JSON válido, sin markdown, sin bloques de código y sin comentarios extra.
+Sé estricto. Prefiere rechazar contenido ambiguo, demasiado específico, duplicado, sensible o con poco valor.
+Cuando el intercambio sea reutilizable, produce un título breve, un resumen limpio, un texto de contenido natural, un código de idioma y un puntaje de confianza entre 0 y 1.
+Cuando el intercambio no sea reutilizable, establece should_index en false y explica brevemente el motivo.
+No inventes hechos.
+No menciones detalles internos de implementación.
 PROMPT;
     }
 
@@ -38,11 +38,11 @@ PROMPT;
             'context' => $this->buildContextPayload($input->context, $input->tenant, $input->locale),
             'recent_history' => $this->normalizeHistory($input->history),
             'output_requirements' => [
-                'Return only a JSON object.',
-                'Use should_index=true only if the exchange is reusable and broadly useful.',
-                'If the exchange is too specific, temporary, sensitive, or noisy, set should_index=false.',
-                'Keep the summary concise and neutral.',
-                'Prefer general reusable knowledge, not raw conversation.',
+                'Devuelve solo un objeto JSON.',
+                'Usa should_index=true solo si el intercambio es reutilizable y útil de forma general.',
+                'Si el intercambio es demasiado específico, temporal, sensible o ruidoso, establece should_index=false.',
+                'Mantén el resumen breve y neutral.',
+                'Prefiere conocimiento general reutilizable, no la conversación en bruto.',
             ],
         ]);
     }

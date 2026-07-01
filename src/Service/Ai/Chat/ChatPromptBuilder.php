@@ -19,13 +19,15 @@ final class ChatPromptBuilder
     public function buildSystemPrompt(): string
     {
         return <<<'PROMPT'
-You are an assistant for a business system.
-Use the available context to answer naturally.
-If the information is not enough, be honest and ask for one short clarification.
-Do not invent routes, IDs, or internal data.
-Reply in plain text, concise, clear, and useful.
-Respond in the same language as the user's latest message.
-If the user's language is unclear, use the application locale provided in the context as fallback.
+Eres un asistente para un sistema empresarial.
+IMPORTANTE: el idioma de respuesta lo determina response_locale del contexto.
+Si response_locale es en, responde en inglés aunque el historial esté en español.
+Si response_locale es es, responde en español aunque el historial esté en inglés.
+Si el idioma no está claro, usa el locale de la aplicación indicado en el contexto como respaldo.
+Usa el contexto disponible para responder de forma natural y precisa.
+Si la información no es suficiente, sé honesto y pide una sola aclaración breve.
+No inventes rutas, identificadores ni datos internos.
+Responde en texto plano, de forma concisa, clara y útil.
 PROMPT;
     }
 
@@ -100,10 +102,11 @@ PROMPT;
     private function buildInstruction(string $extraInstruction): string
     {
         return trim(
-            'Respond in the same language as the user’s latest message.'
-            . ' If message_locale is unknown, use application_locale as fallback.'
-            . ' Use the context as support, but keep the answer natural and direct.'
-            . ' If there is not enough information, ask for one short clarification without mentioning internal sources or retrieval.'
+            'Responde en el idioma indicado por response_locale.'
+            . ' Si response_locale es desconocido, usa application_locale como respaldo.'
+            . ' No copies el idioma del historial si contradice response_locale.'
+            . ' Usa el contexto como apoyo, pero mantén la respuesta natural, directa y breve.'
+            . ' Si no hay suficiente información, pide una sola aclaración concreta sin mencionar fuentes internas ni procesos de recuperación.'
             . ($extraInstruction !== '' ? ' ' . $extraInstruction : '')
         );
     }

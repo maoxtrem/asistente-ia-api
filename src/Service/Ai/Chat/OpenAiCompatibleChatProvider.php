@@ -39,19 +39,30 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
                 ],
             ];
 
-            if (trim((string) $userPrompt) !== '') {
+            $resolvedUserPrompt = trim((string) ($userPrompt ?? ''));
+            if ($resolvedUserPrompt === '') {
+                $resolvedUserPrompt = $this->promptBuilder->buildUserPrompt($input);
+            }
+
+            if ($resolvedUserPrompt !== '') {
                 $messages[] = [
                     'role' => 'user',
-                    'content' => $userPrompt ?? $this->promptBuilder->buildUserPrompt($input),
+                    'content' => $resolvedUserPrompt,
                 ];
             }
 
+            $payload = [
+                'model' => $this->chatModel,
+                'stream' => false,
+                'messages' => $messages,
+            ];
+
+            if ($this->expectsJsonResponse($systemPrompt, $userPrompt)) {
+                $payload['response_format'] = ['type' => 'json_object'];
+            }
+
             $response = $this->httpClient->request('POST', $this->buildOpenAiCompatibleEndpoint('/chat/completions'), [
-                'json' => [
-                    'model' => $this->chatModel,
-                    'stream' => false,
-                    'messages' => $messages,
-                ],
+                'json' => $payload,
                 'headers' => [
                     'Authorization' => 'Bearer ' . $this->requireApiKey($this->apiKey),
                 ],
@@ -167,5 +178,22 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
         }
 
         return $baseUrl . '/v1' . $normalizedPath;
+    }
+
+    private function expectsJsonResponse(?string $systemPrompt, ?string $userPrompt): bool
+    {
+        $haystack = strtolower(trim((string) $systemPrompt) . ' ' . trim((string) $userPrompt));
+
+        if ($haystack === '') {
+            return false;
+        }
+
+        return str_contains($haystack, 'valid json')
+            || str_contains($haystack, 'json valido')
+            || str_contains($haystack, 'json válido')
+            || str_contains($haystack, 'return only a json object')
+            || str_contains($haystack, 'return only valid json')
+            || str_contains($haystack, 'devuelve solo json')
+            || str_contains($haystack, 'devuelve solo un objeto json');
     }
 }

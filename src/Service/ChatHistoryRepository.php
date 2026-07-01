@@ -14,7 +14,6 @@ final class ChatHistoryRepository
     private const CONVERSATION_ID_LENGTH = 32;
 
     private PDO $pdo;
-    private bool $schemaReady = false;
 
     public function __construct(
         private readonly string $databaseUrl,
@@ -25,9 +24,8 @@ final class ChatHistoryRepository
     public function ensureConversation(string $conversationId, string $tenant): void
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-        $this->initializeSchema();
 
-        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $now = $this->utcNow();
         $sql = <<<'SQL'
 INSERT INTO chat_conversations (id, tenant, created_at, updated_at, last_message_at)
 VALUES (:id, :tenant, :created_at, :updated_at, :last_message_at)
@@ -52,9 +50,8 @@ SQL;
     public function appendMessage(string $conversationId, string $tenant, string $role, string $content, array $metadata = []): void
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-        $this->initializeSchema();
 
-        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $now = $this->utcNow();
         $sql = <<<'SQL'
 INSERT INTO chat_messages (conversation_id, tenant, role, content, metadata, created_at)
 VALUES (:conversation_id, :tenant, :role, :content, :metadata, :created_at)
@@ -79,9 +76,8 @@ SQL;
     public function appendFeedback(string $conversationId, string $tenant, bool $helpful, string $question, string $answer, array $metadata = []): void
     {
         $conversationId = $this->normalizeConversationId($conversationId, false);
-        $this->initializeSchema();
 
-        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $now = $this->utcNow();
         $sql = <<<'SQL'
 INSERT INTO chat_feedback (conversation_id, tenant, helpful, question, answer, metadata, created_at)
 VALUES (:conversation_id, :tenant, :helpful, :question, :answer, :metadata, :created_at)
@@ -120,9 +116,7 @@ SQL;
             throw new RuntimeException('El identificador del candidato no puede estar vacio.');
         }
 
-        $this->initializeSchema();
-
-        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $now = $this->utcNow();
         $sql = <<<'SQL'
 INSERT INTO chat_knowledge_candidates (
     candidate_key, conversation_id, tenant, helpful, question, answer, status, title, summary, content, language, confidence,
@@ -184,7 +178,6 @@ SQL;
     public function fetchMessages(string $conversationId, string $tenant, int $limit = 20): array
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-        $this->initializeSchema();
 
         $sql = <<<'SQL'
 SELECT role, content, metadata, created_at
@@ -224,7 +217,6 @@ SQL;
     public function conversationExists(string $conversationId, string $tenant): bool
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-        $this->initializeSchema();
 
         $stmt = $this->pdo->prepare('SELECT 1 FROM chat_conversations WHERE id = :id AND tenant = :tenant LIMIT 1');
         $stmt->execute([
@@ -274,97 +266,6 @@ SQL;
         ]);
     }
 
-    private function initializeSchema(): void
-    {
-        if ($this->schemaReady) {
-            return;
-        }
-
-        $this->pdo->exec(<<<'SQL'
-CREATE TABLE IF NOT EXISTS chat_conversations (
-    id CHAR(32) NOT NULL,
-    tenant VARCHAR(120) NOT NULL,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    last_message_at DATETIME DEFAULT NULL,
-    PRIMARY KEY (id),
-    KEY idx_chat_conversations_tenant (tenant),
-    KEY idx_chat_conversations_updated_at (updated_at),
-    KEY idx_chat_conversations_last_message_at (last_message_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-SQL);
-
-        $this->pdo->exec(<<<'SQL'
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    conversation_id CHAR(32) NOT NULL,
-    tenant VARCHAR(120) NOT NULL,
-    role VARCHAR(20) NOT NULL,
-    content LONGTEXT NOT NULL,
-    metadata JSON DEFAULT NULL,
-    created_at DATETIME NOT NULL,
-    PRIMARY KEY (id),
-    KEY idx_chat_messages_conversation_created_at (conversation_id, created_at),
-    KEY idx_chat_messages_tenant (tenant),
-    CONSTRAINT fk_chat_messages_conversation
-        FOREIGN KEY (conversation_id) REFERENCES chat_conversations (id)
-        ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-SQL);
-
-        $this->pdo->exec(<<<'SQL'
-CREATE TABLE IF NOT EXISTS chat_feedback (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    conversation_id CHAR(32) NOT NULL,
-    tenant VARCHAR(120) NOT NULL,
-    helpful TINYINT(1) NOT NULL DEFAULT 0,
-    question LONGTEXT NOT NULL,
-    answer LONGTEXT NOT NULL,
-    metadata JSON DEFAULT NULL,
-    created_at DATETIME NOT NULL,
-    PRIMARY KEY (id),
-    KEY idx_chat_feedback_conversation_created_at (conversation_id, created_at),
-    KEY idx_chat_feedback_tenant (tenant),
-    KEY idx_chat_feedback_helpful (helpful)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-SQL);
-
-        $this->pdo->exec(<<<'SQL'
-CREATE TABLE IF NOT EXISTS chat_knowledge_candidates (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    candidate_key CHAR(64) NOT NULL,
-    conversation_id CHAR(32) NOT NULL,
-    tenant VARCHAR(120) NOT NULL,
-    helpful TINYINT(1) NOT NULL DEFAULT 0,
-    question LONGTEXT NOT NULL,
-    answer LONGTEXT NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'pending_review',
-    title VARCHAR(255) DEFAULT NULL,
-    summary LONGTEXT DEFAULT NULL,
-    content LONGTEXT DEFAULT NULL,
-    language VARCHAR(20) DEFAULT NULL,
-    confidence DECIMAL(5,4) DEFAULT NULL,
-    should_index TINYINT(1) DEFAULT NULL,
-    duplicate_of CHAR(64) DEFAULT NULL,
-    analysis JSON DEFAULT NULL,
-    metadata JSON DEFAULT NULL,
-    indexed_point_id CHAR(64) DEFAULT NULL,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    indexed_at DATETIME DEFAULT NULL,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_chat_knowledge_candidates_key (candidate_key),
-    KEY idx_chat_knowledge_candidates_conversation_created_at (conversation_id, created_at),
-    KEY idx_chat_knowledge_candidates_tenant (tenant),
-    KEY idx_chat_knowledge_candidates_status (status),
-    KEY idx_chat_knowledge_candidates_helpful (helpful),
-    KEY idx_chat_knowledge_candidates_indexed_at (indexed_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-SQL);
-
-        $this->schemaReady = true;
-    }
-
     private function createPdo(string $databaseUrl): PDO
     {
         $parts = parse_url($databaseUrl);
@@ -402,6 +303,11 @@ SQL);
         }
 
         return $pdo;
+    }
+
+    private function utcNow(): string
+    {
+        return (new DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
     }
 
     private function normalizeConversationId(string $conversationId, bool $strict = true): string

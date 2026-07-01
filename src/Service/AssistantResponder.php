@@ -47,7 +47,12 @@ final class AssistantResponder
             ];
         }
 
-        $vectorContext = $this->vectorContextRetriever->retrieve($message, $tenant, max(1, $this->defaultRetrieveLimit));
+        $vectorContext = $this->vectorContextRetriever->retrieve(
+            $message,
+            $tenant,
+            max(1, $this->defaultRetrieveLimit),
+            $detectedMessageLocale
+        );
 
         if (($vectorContext['ok'] ?? false) !== true || ($vectorContext['matches'] ?? []) === []) {
             $aiMessage = $this->resolveClarificationMessage($message, $context, $tenant, $responseLocale, $history, $vectorContext, $qdrantHealth);
@@ -150,6 +155,10 @@ final class AssistantResponder
             return false;
         }
 
+        if (mb_strlen($normalized) > 20) {
+            return false;
+        }
+
         $greetingPhrases = [
             'hola',
             'buenas',
@@ -160,13 +169,7 @@ final class AssistantResponder
             'saludos',
         ];
 
-        foreach ($greetingPhrases as $phrase) {
-            if ($normalized === $phrase || str_starts_with($normalized, $phrase . ' ')) {
-                return true;
-            }
-        }
-
-        return false;
+        return in_array($normalized, $greetingPhrases, true);
     }
 
     private function normalize(string $value): string
@@ -237,7 +240,7 @@ final class AssistantResponder
         $bestScore = (int) current($scores);
         $secondScore = (int) (array_values($scores)[1] ?? 0);
 
-        if ($bestScore <= 0 || $bestScore === $secondScore) {
+        if ($bestScore < 2 || $bestScore === $secondScore) {
             return 'unknown';
         }
 
