@@ -62,11 +62,13 @@ Reglas:
 - En ese caso, message debe ser una sola pregunta breve en español o ingles depende de idioma de la pregunta.
 - missing_fields debe listar los campos faltantes.
 - Si la informacion es suficiente, responde con status = "ready".
+- Si el usuario pide valores de prueba, aleatorios, demo, ejemplo, mock o una cotizacion de prueba, trátalo como una solicitud suficiente.
+- En ese caso, puedes generar valores numericos coherentes para ejemplo sin pedir aclaracion, y el message debe dejar claro que son datos de demostracion.
 - Cuando status sea "ready", html debe contener una plantilla HTML completa o un fragmento HTML bien formado.
 - La plantilla HTML puede usar sintaxis Twig y debe coincidir con las claves del objeto json.
 - json debe contener solo los datos necesarios para renderizar el html.
-- No inventes datos sensibles ni numericos.
-- Usa exactamente los valores numéricos y nombres que aparezcan en la pregunta.
+- No inventes datos sensibles.
+- Usa exactamente los valores numéricos y nombres que aparezcan en la pregunta, salvo cuando el usuario pida explícitamente datos de prueba o aleatorios.
 - Si la pregunta pide logo, marca, color, tabla, encabezado, subtitulo o estilo, incluyelos en el html.
 - Si el documento es corporativo, incluye una marca visual real: una imagen `img`, un isotipo SVG embebido o un logo vectorial sencillo. No uses solo la palabra "Logo" como texto decorativo.
 - Si la pregunta incluye nombres, valores, cantidades o totales, reflejalos en el json y úsalos en el html.
