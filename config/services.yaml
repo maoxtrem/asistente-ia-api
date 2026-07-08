@@ -36,6 +36,9 @@ parameters:
     app.minio_secret_key: '%env(string:MINIO_SECRET_KEY)%'
     app.minio_use_path_style: '%env(bool:MINIO_USE_PATH_STYLE)%'
     app.minio_verify_ssl: '%env(bool:MINIO_VERIFY_SSL)%'
+    app.chattoolpdf_environment: '%env(string:CHATTOOLPDF_ENVIRONMENT)%'
+    app.chattoolpdf_service_url: '%env(string:CHATTOOLPDF_SERVICE_URL)%'
+    app.chattoolpdf_service_host: '%env(string:CHATTOOLPDF_SERVICE_HOST)%'
     app.default_retrieve_limit: 4
     app.chat_prompt_max_history_items: 4
     app.chat_prompt_max_vector_matches: 2
@@ -189,6 +192,16 @@ services:
         arguments:
             $maxHistoryItems: '%app.chat_prompt_max_history_items%'
             $assistantName: '%app.assistant_name%'
+
+    App\Controller\Api\ChatToolPdfController:
+        arguments:
+            $assistantName: '%app.assistant_name%'
+            $chattoolpdfEnvironment: '%app.chattoolpdf_environment%'
+
+    App\Service\ChatToolPdf\ServicePdfClient:
+        arguments:
+            $servicePdfUrl: '%app.chattoolpdf_service_url%'
+            $servicePdfHost: '%app.chattoolpdf_service_host%'
 
     App\Controller\Api\BootstrapController:
         arguments:

@@ -1,0 +1,62 @@
+###
+# chattoolpdf: modo pregunta
+POST https://asistente-ia-api.localhost/api/chattoolpdf
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "Hola, que puedes hacer?",
+  "tool": false,
+  "locale": "es"
+}
+
+###
+# chattoolpdf: modo PDF
+POST https://asistente-ia-api.localhost/api/chattoolpdf
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "Genera una cotizacion formal, corporativa y visualmente cuidada para un servicio de consultoria estrategica y auditoria tecnica. El documento debe parecer una pieza comercial lista para enviar a cliente, con un encabezado fuerte, un logo real usa este https://ospprojectestimate.com/web/icono.png o isotipo visual, nombre de marca, subtitulo elegante, una paleta sobria en tonos oscuros y azules, separadores claros, tipografia limpia, seccion de datos del cliente, tabla detallada de servicios, subtotales, impuestos y total final. No uses la palabra logo como texto plano; crea una marca visual estetica usando imagen, SVG o un bloque grafico. Usa el nombre del cliente Demo SAS y el NIT 900123456-7. Incluye exactamente estos servicios: consultoria estrategica por 10 horas a 120000 y auditoria tecnica por 8 horas a 95000. El resultado debe ser profesional, claro, ordenado y con estilo moderno. Si necesitas completar algo, infierelo a partir de la solicitud, pero no inventes datos numéricos.",
+  "tool": true,
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "locale": "es"
+}
+
+###
+# service-pdf: generacion directa
+POST https://service-pdf.localhost/generate
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "entorno": "dev",
+  "paper_size": "A4",
+  "orientation": "portrait",
+  "json": {
+    "cliente": "Demo SAS",
+    "nit": "900123456-7",
+    "horas_consultoria": "10",
+    "precio_consultoria": "120000",
+    "horas_auditoria": "8",
+    "precio_auditoria": "95000",
+    "total": "1140000"
+  },
+  "html": "<!doctype html><html><head><meta charset=\"UTF-8\"><title>Cotizacion</title></head><body><h1>Cotizacion de Servicios</h1><p>Cliente: {{ cliente }}<br>NIT: {{ nit }}</p><h2>Servicios Cotizados</h2><ul><li>Consultoria estrategica: {{ horas_consultoria }} horas a ${{ precio_consultoria }}</li><li>Auditoria tecnica: {{ horas_auditoria }} horas a ${{ precio_auditoria }}</li></ul><h3>Total</h3><p>${{ total }}</p></body></html>"
+}
+
+###
+# service-pdf: consulta de llaves por usuario y entorno
+POST https://service-pdf.localhost/keys
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "entorno": "dev",
+  "limit": 10
+}

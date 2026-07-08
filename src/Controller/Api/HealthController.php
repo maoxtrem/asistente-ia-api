@@ -25,6 +25,7 @@ final class HealthController
             'docs' => [
                 'health' => '/api/health',
                 'chat' => '/api/chat',
+                'chattoolpdf' => '/api/chattoolpdf',
                 'ia_health' => '/api/ia/health',
                 'feedback' => '/api/feedback',
                 'canvas' => '/api/v1/asistentecamvasia/canvas/generate',
