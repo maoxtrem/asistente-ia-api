@@ -124,7 +124,7 @@ services:
         arguments:
             $databaseUrl: '%app.database_url%'
 
-    App\Service\ChatToolPdf\ServicePdfImageClient:
+    App\Service\ChatToolPdf\PdfImageClient:
         arguments:
             $servicePdfUrl: '%app.chattoolpdf_service_url%'
             $servicePdfHost: '%app.chattoolpdf_service_host%'
@@ -143,7 +143,7 @@ services:
             $assistantName: '%app.assistant_name%'
             $chattoolpdfEnvironment: '%app.chattoolpdf_environment%'
 
-    App\Service\ChatToolPdf\ServicePdfClient:
+    App\Service\ChatToolPdf\PdfClient:
         arguments:
             $servicePdfUrl: '%app.chattoolpdf_service_url%'
             $servicePdfHost: '%app.chattoolpdf_service_host%'

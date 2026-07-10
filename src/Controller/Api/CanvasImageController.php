@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\Service\ChatToolPdf\ServicePdfImageClient;
+use App\Service\ChatToolPdf\PdfImageClient;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -13,7 +13,7 @@ use Symfony\Component\Routing\Attribute\Route;
 final class CanvasImageController
 {
     public function __construct(
-        private readonly ServicePdfImageClient $imageClient,
+        private readonly PdfImageClient $imageClient,
     ) {
     }
 

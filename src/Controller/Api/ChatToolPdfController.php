@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Controller\Api;
 
 use App\Service\ChatToolPdf\ChatToolPdfGenerationService;
-use App\Service\ChatToolPdf\ServicePdfClient;
+use App\Service\ChatToolPdf\PdfClient;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -17,7 +17,7 @@ final class ChatToolPdfController
 {
     public function __construct(
         private readonly ChatToolPdfGenerationService $generationService,
-        private readonly ServicePdfClient $servicePdfClient,
+        private readonly PdfClient $servicePdfClient,
         private readonly LoggerInterface $logger,
         private readonly string $assistantName,
         private readonly string $chattoolpdfEnvironment,

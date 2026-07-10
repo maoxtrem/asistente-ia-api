@@ -8,7 +8,7 @@ use App\DTO\CanvasGenerationRequest;
 use App\DTO\CanvasGenerationResponse;
 use App\Service\Ai\Chat\CanvasImagePromptBuilder;
 use App\Service\Ai\Image\OpenAiImageGenerationProvider;
-use App\Service\ChatToolPdf\ServicePdfImageClient;
+use App\Service\ChatToolPdf\PdfImageClient;
 use Throwable;
 
 final class CanvasGenerationService
@@ -16,7 +16,7 @@ final class CanvasGenerationService
     public function __construct(
         private readonly CanvasImagePromptBuilder $promptBuilder,
         private readonly OpenAiImageGenerationProvider $imageProvider,
-        private readonly ServicePdfImageClient $imageClient,
+        private readonly PdfImageClient $imageClient,
         private readonly string $canvasEnvironment,
     ) {
     }

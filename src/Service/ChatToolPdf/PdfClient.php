@@ -8,7 +8,7 @@ use RuntimeException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
-final class ServicePdfClient
+final class PdfClient
 {
     public function __construct(
         private readonly HttpClientInterface $httpClient,
