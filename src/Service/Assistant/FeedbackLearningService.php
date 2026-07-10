@@ -2,13 +2,14 @@
 
 declare(strict_types=1);
 
-namespace App\Service;
+namespace App\Service\Assistant;
 
 use App\Contract\ChatProviderInterface;
 use App\DTO\FeedbackAnalysisPromptInput;
 use App\DTO\FeedbackRequest;
 use App\DTO\IndexDocument;
 use App\Service\Ai\Chat\FeedbackAnalysisPromptBuilder;
+use App\Service\Vector\IndexDocumentProcessor;
 use Throwable;
 
 final class FeedbackLearningService

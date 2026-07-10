@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Service;
+namespace App\Service\Vector;
 
 use RuntimeException;
 use Symfony\Component\Uid\Uuid;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Service;
+namespace App\Service\Canvas;
 
 use App\DTO\CanvasGenerationRequest;
 use App\DTO\CanvasGenerationResponse;

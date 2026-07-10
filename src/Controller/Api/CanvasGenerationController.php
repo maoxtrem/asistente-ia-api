@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Controller\Api;
 
 use App\DTO\CanvasGenerationRequest;
-use App\Service\CanvasGenerationService;
+use App\Service\Canvas\CanvasGenerationService;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;

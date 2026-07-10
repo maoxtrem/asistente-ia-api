@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
-namespace App\Service;
+namespace App\Service\Assistant;
 
 use App\Contract\ChatProviderInterface;
 use App\Service\Ai\Chat\ChatPromptBuilder;
+use App\Service\Vector\VectorContextRetriever;
 use JsonException;
 
 final class AssistantResponder

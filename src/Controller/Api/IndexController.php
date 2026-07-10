@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Controller\Api;
 
 use App\DTO\IndexDocument;
-use App\Service\IndexDocumentProcessor;
+use App\Service\Vector\IndexDocumentProcessor;
 use RuntimeException;
 use Throwable;
 use Symfony\Component\HttpFoundation\JsonResponse;

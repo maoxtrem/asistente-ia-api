@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\Service\AssistantResponder;
-use App\Service\ChatHistoryRepository;
-use App\Service\QdrantClient;
+use App\Service\Assistant\AssistantResponder;
+use App\Service\Assistant\ChatHistoryRepository;
+use App\Service\Vector\QdrantClient;
 use RuntimeException;
 use Throwable;
 use Symfony\Component\HttpFoundation\JsonResponse;

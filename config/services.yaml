@@ -51,7 +51,7 @@ services:
     App\:
         resource: '../src/'
 
-    App\Service\QdrantClient:
+    App\Service\Vector\QdrantClient:
         arguments:
             $qdrantUrl: '%app.qdrant_url%'
 
@@ -110,17 +110,17 @@ services:
 
     App\Contract\EmbeddingProviderInterface: '@App\Service\Ai\Embedding\EmbeddingProviderSelector'
 
-    App\Service\AssistantResponder:
+    App\Service\Assistant\AssistantResponder:
         arguments:
             $defaultRetrieveLimit: '%app.default_retrieve_limit%'
             $greetingInstruction: '%app.greeting_instruction%'
             $clarificationInstruction: '%app.clarification_instruction%'
 
-    App\Service\IndexDocumentProcessor:
+    App\Service\Vector\IndexDocumentProcessor:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
 
-    App\Service\ChatHistoryRepository:
+    App\Service\Assistant\ChatHistoryRepository:
         arguments:
             $databaseUrl: '%app.database_url%'
 
@@ -129,7 +129,7 @@ services:
             $servicePdfUrl: '%app.chattoolpdf_service_url%'
             $servicePdfHost: '%app.chattoolpdf_service_host%'
 
-    App\Service\CanvasGenerationService:
+    App\Service\Canvas\CanvasGenerationService:
         arguments:
             $canvasEnvironment: '%app.canvas_image_environment%'
 
