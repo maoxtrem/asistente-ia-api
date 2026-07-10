@@ -1,5 +1,17 @@
 ###
 # canvas: generar imagen desde prompt con tenant y usuario
+# Respuesta esperada:
+# {
+#   "ok": true|false,
+#   "message": "Imagen generada y almacenada correctamente." | "texto de error",
+#   "imageUrl": "url publica del recurso",
+#   "imageKey": "reference o uuid"
+# }
+# Lectura del flujo:
+# - `ok=true` significa que la IA generó la imagen y service-pdf la almacenó.
+# - `imageUrl` es la URL final para abrir la imagen.
+# - `imageKey` sirve como referencia interna para consultar o redirigir.
+# - Si falla OpenAI o service-pdf, `ok=false` y `message` trae el motivo.
 POST https://asistente-ia-api.localhost/api/v1/asistentecamvasia/canvas/generate
 Content-Type: application/json
 Accept: application/json
@@ -17,6 +29,29 @@ Accept: application/json
 
 ###
 # canvas: listar imagenes por tenant, usuario y entorno
+# Respuesta esperada:
+# {
+#   "ok": true,
+#   "count": 6,
+#   "items": [
+#     {
+#       "reference": "...",
+#       "uuid": "...",
+#       "tenant": "tenant-demo",
+#       "usuario": "usuario-demo",
+#       "entorno": "dev",
+#       "status": "stored",
+#       "image_file_name": "logo-demo.png",
+#       "image_mime_type": "image/png",
+#       "imageUrl": "url publica de la imagen"
+#     }
+#   ]
+# }
+# Lectura del flujo:
+# - `count` indica cuantas imagenes encontro el microservicio.
+# - Cada item representa una imagen guardada en service-pdf.
+# - `imageUrl` es la URL directa para visualizar la imagen.
+# - `reference` y `uuid` sirven como identificadores estables del registro.
 POST https://asistente-ia-api.localhost/api/v1/asistentecamvasia/canvas/images
 Content-Type: application/json
 Accept: application/json

@@ -1,5 +1,29 @@
 ###
 # asistente: bootstrap de conversacion
+# Respuesta esperada:
+# {
+#   "status": "success",
+#   "data": {
+#     "conversation_id": "id normalizado o generado",
+#     "messages": [
+#       {
+#         "role": "user|assistant",
+#         "content": "mensaje",
+#         "created_at": "timestamp",
+#         "links": [],
+#         "metadata": {}
+#       }
+#     ],
+#     "assistant": "nombre del asistente",
+#     "bundle": {
+#       "widget_url": "...",
+#       "vector_form_url": "..."
+#     }
+#   }
+# }
+# Lectura del flujo:
+# - Sirve para inicializar el historial antes de enviar mensajes.
+# - `conversation_id` debe reutilizarse en los siguientes envíos.
 POST https://asistente-ia-api.localhost/api/bootstrap
 Content-Type: application/json
 Accept: application/json
@@ -12,6 +36,37 @@ Accept: application/json
 
 ###
 # asistente: chat general
+# Respuesta esperada:
+# {
+#   "status": "success",
+#   "data": {
+#     "message": "respuesta de la IA",
+#     "conversation_id": "id de conversacion",
+#     "assistant": "nombre del asistente",
+#     "tenant": "tenant-demo",
+#     "client_key": "cliente-demo",
+#     "message_locale": "es",
+#     "response_locale": "es",
+#     "links": [],
+#     "intent": "greeting|answer|...",
+#     "context_note": "texto opcional",
+#     "sources": {
+#       "ok": true,
+#       "collection": "...",
+#       "tenant": "tenant-demo",
+#       "matches": []
+#     },
+#     "qdrant": {
+#       "ok": true,
+#       "skipped": true
+#     }
+#   }
+# }
+# Lectura del flujo:
+# - `message` es la salida final para el usuario.
+# - `sources` resume el contexto recuperado desde vectorial.
+# - `links` contiene accesos o referencias sugeridas por la IA.
+# - `intent` describe el tipo de respuesta generada.
 POST https://asistente-ia-api.localhost/api/chat
 Content-Type: application/json
 Accept: application/json

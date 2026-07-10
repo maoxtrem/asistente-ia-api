@@ -1,5 +1,14 @@
 ###
 # chattoolpdf: modo pregunta
+# Respuesta esperada:
+# {
+#   "status": "success",
+#   "message": "respuesta directa de la IA"
+# }
+# Lectura del flujo:
+# - Cuando `tool=false`, el endpoint solo devuelve la respuesta conversacional.
+# - No genera PDF ni devuelve URL.
+# - `message` es el texto final que debe mostrar el frontend.
 POST https://asistente-ia-api.localhost/api/chattoolpdf
 Content-Type: application/json
 Accept: application/json
@@ -12,6 +21,19 @@ Accept: application/json
 
 ###
 # chattoolpdf: modo PDF
+# Respuesta esperada:
+# {
+#   "status": "success",
+#   "message": "resumen de lo que la IA construyo",
+#   "pdf_url": "url final del PDF"
+# }
+# Otros estados posibles:
+# - `pending`: faltan datos para continuar.
+# - `error`: la IA, OpenAI o service-pdf fallaron.
+# Lectura del flujo:
+# - Cuando `tool=true`, la IA genera HTML + JSON, luego el microservicio llama a service-pdf.
+# - `message` debe describir el documento generado.
+# - `pdf_url` es el enlace final para abrir el PDF.
 POST https://asistente-ia-api.localhost/api/chattoolpdf
 Content-Type: application/json
 Accept: application/json
