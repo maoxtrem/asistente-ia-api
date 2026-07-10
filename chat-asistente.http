@@ -1,0 +1,27 @@
+###
+# asistente: bootstrap de conversacion
+POST https://asistente-ia-api.localhost/api/bootstrap
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenant": "tenant-demo",
+  "client_key": "cliente-demo",
+  "limit": 10
+}
+
+###
+# asistente: chat general
+POST https://asistente-ia-api.localhost/api/chat
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "Hola, necesito ayuda para organizar una solicitud interna.",
+  "tenant": "tenant-demo",
+  "client_key": "cliente-demo",
+  "locale": "es",
+  "context": {
+    "source": "web"
+  }
+}

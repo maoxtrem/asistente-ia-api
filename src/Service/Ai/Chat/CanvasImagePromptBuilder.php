@@ -13,6 +13,7 @@ final class CanvasImagePromptBuilder
         return trim(implode("\n", [
             'Generate one image.',
             'Tenant: ' . $request->tenant,
+            'Usuario: ' . $request->usuario,
             'Locale: ' . $request->locale,
             'Request: ' . $request->message,
             'Style: polished, modern, high-quality, marketing-ready, easy to understand.',

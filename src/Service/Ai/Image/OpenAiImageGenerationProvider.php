@@ -24,7 +24,7 @@ final class OpenAiImageGenerationProvider
     }
 
     /**
-     * @return array{image_bytes:string, raw: array<string, mixed>}
+     * @return array{image_base64:string, raw: array<string, mixed>}
      */
     public function generate(string $prompt): array
     {
@@ -57,13 +57,8 @@ final class OpenAiImageGenerationProvider
             throw new RuntimeException('OpenAI no devolvio una imagen valida.');
         }
 
-        $imageBytes = base64_decode($imageBase64, true);
-        if ($imageBytes === false || $imageBytes === '') {
-            throw new RuntimeException('No fue posible decodificar la imagen devuelta por OpenAI.');
-        }
-
         return [
-            'image_bytes' => $imageBytes,
+            'image_base64' => $imageBase64,
             'raw' => $payload,
         ];
     }

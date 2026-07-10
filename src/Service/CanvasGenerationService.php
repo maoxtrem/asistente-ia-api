@@ -6,12 +6,9 @@ namespace App\Service;
 
 use App\DTO\CanvasGenerationRequest;
 use App\DTO\CanvasGenerationResponse;
-use App\Event\CanvasGenerationCompleted;
 use App\Service\Ai\Chat\CanvasImagePromptBuilder;
 use App\Service\Ai\Image\OpenAiImageGenerationProvider;
-use App\Service\Storage\MinioStorage;
-use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
-use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
+use App\Service\ChatToolPdf\ServicePdfImageClient;
 use Throwable;
 
 final class CanvasGenerationService
@@ -19,9 +16,8 @@ final class CanvasGenerationService
     public function __construct(
         private readonly CanvasImagePromptBuilder $promptBuilder,
         private readonly OpenAiImageGenerationProvider $imageProvider,
-        private readonly MinioStorage $minioStorage,
-        private readonly UrlGeneratorInterface $urlGenerator,
-        private readonly EventDispatcherInterface $eventDispatcher,
+        private readonly ServicePdfImageClient $imageClient,
+        private readonly string $canvasEnvironment,
     ) {
     }
 
@@ -30,31 +26,31 @@ final class CanvasGenerationService
         try {
             $prompt = $this->promptBuilder->buildUserPrompt($request);
             $response = $this->imageProvider->generate($prompt);
-            $imageBytes = $response['image_bytes'];
-            $objectKey = $this->buildObjectKey($request);
-            $this->minioStorage->upload($objectKey, $imageBytes, 'image/png', [
+            $imageBase64 = $response['image_base64'];
+            $fileName = $this->buildFileName($request);
+            $imageResult = $this->imageClient->create([
                 'tenant' => $request->tenant,
-                'locale' => $request->locale,
-                'message-hash' => sha1($request->message),
+                'usuario' => $request->usuario,
+                'entorno' => $this->canvasEnvironment !== '' ? $this->canvasEnvironment : 'dev',
+                'mime_type' => 'image/png',
+                'file_name' => $fileName,
+                'image' => $imageBase64,
+                'metadata' => $request->metadata,
             ]);
 
             $canvasResponse = new CanvasGenerationResponse(
                 ok: true,
-                message: 'Imagen generada correctamente.',
+                message: 'Imagen generada y almacenada correctamente.',
                 design: null,
                 actions: [],
-                imageUrl: $this->urlGenerator->generate('asistentecamvasia_canvas_image', [
-                    'key' => $objectKey,
-                ], UrlGeneratorInterface::ABSOLUTE_URL),
-                imageKey: $objectKey,
+                imageUrl: (string) ($imageResult['image_url'] ?? ''),
+                imageKey: (string) ($imageResult['reference'] ?? $imageResult['uuid'] ?? ''),
                 raw: [
                     'assistant_response' => $response['raw'],
                     'prompt' => $prompt,
-                    'object_key' => $objectKey,
+                    'image_response' => $imageResult,
                 ],
             );
-
-            $this->eventDispatcher->dispatch(new CanvasGenerationCompleted($request, $canvasResponse, []));
 
             return $canvasResponse;
         } catch (Throwable $exception) {
@@ -83,13 +79,13 @@ final class CanvasGenerationService
         );
     }
 
-    private function buildObjectKey(CanvasGenerationRequest $request): string
+    private function buildFileName(CanvasGenerationRequest $request): string
     {
         $safeTenant = preg_replace('/[^a-zA-Z0-9_-]+/', '-', $request->tenant) ?: 'tenant';
         $safeLocale = preg_replace('/[^a-zA-Z0-9_-]+/', '-', $request->locale) ?: 'es';
 
         return sprintf(
-            'canvas/%s/%s/%s.png',
+            'canvas-%s-%s-%s.png',
             $safeTenant,
             $safeLocale,
             bin2hex(random_bytes(8)),

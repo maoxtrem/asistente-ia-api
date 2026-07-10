@@ -1,0 +1,29 @@
+###
+# canvas: generar imagen desde prompt con tenant y usuario
+POST https://asistente-ia-api.localhost/api/v1/asistentecamvasia/canvas/generate
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "message": "Genera una pieza visual corporativa, elegante y moderna para una cotizacion de servicios. Debe incluir portada, jerarquia tipografica clara, colores sobrios, una marca visual en lugar de texto plano, tabla de servicios y una composicion profesional lista para presentar al cliente.",
+  "metadata": {
+    "source": "bundle-canvas",
+    "request_id": "req-demo-001"
+  },
+  "locale": "es"
+}
+
+###
+# canvas: listar imagenes por tenant, usuario y entorno
+POST https://asistente-ia-api.localhost/api/v1/asistentecamvasia/canvas/images
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "entorno": "dev",
+  "limit": 10
+}

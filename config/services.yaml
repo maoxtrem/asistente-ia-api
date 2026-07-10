@@ -11,7 +11,6 @@ parameters:
     app.database_url: '%env(string:DATABASE_URL)%'
     app.qdrant_url: '%env(string:QDRANT_URL)%'
     app.chat_qdrant_collection: '%env(string:QDRANT_CHAT_COLLECTION)%'
-    app.canvas_qdrant_collection: '%env(string:QDRANT_CANVAS_COLLECTION)%'
     app.embedding_provider_url: '%env(string:EMBEDDING_PROVIDER_URL)%'
     app.embedding_model: '%env(string:EMBEDDING_MODEL)%'
     app.chat_provider_url: '%env(string:CHAT_PROVIDER_URL)%'
@@ -28,17 +27,10 @@ parameters:
     app.openai_image_quality: '%env(string:OPENAI_IMAGE_QUALITY)%'
     app.openai_image_output_format: '%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%'
     app.openai_image_background: '%env(string:OPENAI_IMAGE_BACKGROUND)%'
-    app.minio_endpoint: '%env(string:MINIO_ENDPOINT)%'
-    app.minio_public_endpoint: '%env(string:MINIO_PUBLIC_ENDPOINT)%'
-    app.minio_region: '%env(string:MINIO_REGION)%'
-    app.minio_bucket: '%env(string:MINIO_BUCKET)%'
-    app.minio_access_key: '%env(string:MINIO_ACCESS_KEY)%'
-    app.minio_secret_key: '%env(string:MINIO_SECRET_KEY)%'
-    app.minio_use_path_style: '%env(bool:MINIO_USE_PATH_STYLE)%'
-    app.minio_verify_ssl: '%env(bool:MINIO_VERIFY_SSL)%'
     app.chattoolpdf_environment: '%env(string:CHATTOOLPDF_ENVIRONMENT)%'
     app.chattoolpdf_service_url: '%env(string:CHATTOOLPDF_SERVICE_URL)%'
     app.chattoolpdf_service_host: '%env(string:CHATTOOLPDF_SERVICE_HOST)%'
+    app.canvas_image_environment: '%env(string:CANVAS_IMAGE_ENVIRONMENT)%'
     app.default_retrieve_limit: 4
     app.chat_prompt_max_history_items: 4
     app.chat_prompt_max_vector_matches: 2
@@ -118,75 +110,28 @@ services:
 
     App\Contract\EmbeddingProviderInterface: '@App\Service\Ai\Embedding\EmbeddingProviderSelector'
 
-    App\Service\VectorContextRetriever:
-        arguments:
-            $qdrantCollection: '%app.chat_qdrant_collection%'
-            $allowedDocumentKinds: ['chat_knowledge', 'module']
-
     App\Service\AssistantResponder:
         arguments:
             $defaultRetrieveLimit: '%app.default_retrieve_limit%'
             $greetingInstruction: '%app.greeting_instruction%'
             $clarificationInstruction: '%app.clarification_instruction%'
 
-    app.canvas_vector_context_retriever:
-        class: App\Service\VectorContextRetriever
-        arguments:
-            $embeddingClient: '@App\Contract\EmbeddingProviderInterface'
-            $qdrantClient: '@App\Service\QdrantClient'
-            $qdrantCollection: '%app.canvas_qdrant_collection%'
-            $allowedDocumentKinds: ['canvas_operational']
-
     App\Service\IndexDocumentProcessor:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
-
-    app.canvas_index_document_processor:
-        class: App\Service\IndexDocumentProcessor
-        arguments:
-            $embeddingClient: '@App\Contract\EmbeddingProviderInterface'
-            $qdrantClient: '@App\Service\QdrantClient'
-            $qdrantCollection: '%app.canvas_qdrant_collection%'
-
-    App\EventSubscriber\CanvasGenerationCompletedSubscriber:
-        arguments:
-            $indexDocumentProcessor: '@app.canvas_index_document_processor'
 
     App\Service\ChatHistoryRepository:
         arguments:
             $databaseUrl: '%app.database_url%'
 
-    Aws\S3\S3Client:
+    App\Service\ChatToolPdf\ServicePdfImageClient:
         arguments:
-            $args:
-                version: 'latest'
-                region: '%app.minio_region%'
-                endpoint: '%app.minio_endpoint%'
-                use_path_style_endpoint: '%app.minio_use_path_style%'
-                credentials:
-                    key: '%app.minio_access_key%'
-                    secret: '%app.minio_secret_key%'
-                http:
-                    verify: '%app.minio_verify_ssl%'
+            $servicePdfUrl: '%app.chattoolpdf_service_url%'
+            $servicePdfHost: '%app.chattoolpdf_service_host%'
 
-    app.minio_public_client:
-        class: Aws\S3\S3Client
+    App\Service\CanvasGenerationService:
         arguments:
-            $args:
-                version: 'latest'
-                region: '%app.minio_region%'
-                endpoint: '%app.minio_public_endpoint%'
-                use_path_style_endpoint: '%app.minio_use_path_style%'
-                credentials:
-                    key: '%app.minio_access_key%'
-                    secret: '%app.minio_secret_key%'
-                http:
-                    verify: '%app.minio_verify_ssl%'
-
-    App\Service\Storage\MinioStorage:
-        arguments:
-            $bucket: '%app.minio_bucket%'
-            $publicClient: '@app.minio_public_client'
+            $canvasEnvironment: '%app.canvas_image_environment%'
 
     App\Controller\Api\ChatController:
         arguments:

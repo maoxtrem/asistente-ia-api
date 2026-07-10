@@ -28,8 +28,11 @@ final class CanvasGenerationController
 
         $canvasRequest = CanvasGenerationRequest::fromArray($payload);
 
-        if ($canvasRequest->message === '') {
-            return new JsonResponse($this->buildErrorPayload('El campo question o message es obligatorio.'), JsonResponse::HTTP_UNPROCESSABLE_ENTITY);
+        if ($canvasRequest->message === '' || $canvasRequest->tenant === '' || $canvasRequest->usuario === '') {
+            return new JsonResponse(
+                $this->buildErrorPayload('Los campos tenant, usuario y message son obligatorios.'),
+                JsonResponse::HTTP_UNPROCESSABLE_ENTITY
+            );
         }
 
         $response = $this->canvasGenerationService->generate($canvasRequest);
