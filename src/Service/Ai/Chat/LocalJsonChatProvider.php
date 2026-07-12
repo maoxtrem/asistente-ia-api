@@ -46,6 +46,10 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
                 ],
             ];
 
+            foreach ($this->normalizeHistoryMessages($input->history) as $historyMessage) {
+                $messages[] = $historyMessage;
+            }
+
             $resolvedUserPrompt = trim((string) ($userPrompt ?? ''));
             if ($resolvedUserPrompt === '') {
                 $resolvedUserPrompt = $this->promptBuilder->buildUserPrompt($input);
@@ -142,5 +146,34 @@ final class LocalJsonChatProvider implements ChatProviderAdapterInterface
         }
 
         return '';
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $history
+     * @return array<int, array{role:string, content:string}>
+     */
+    private function normalizeHistoryMessages(array $history): array
+    {
+        $normalized = [];
+
+        foreach (array_slice($history, -6) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $role = trim((string) ($item['role'] ?? ''));
+            $content = trim((string) ($item['content'] ?? ''));
+
+            if ($role === '' || $content === '') {
+                continue;
+            }
+
+            $normalized[] = [
+                'role' => $role,
+                'content' => $content,
+            ];
+        }
+
+        return $normalized;
     }
 }

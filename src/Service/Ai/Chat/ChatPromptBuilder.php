@@ -11,7 +11,6 @@ use RuntimeException;
 final class ChatPromptBuilder
 {
     public function __construct(
-        private readonly int $maxHistoryItems = 4,
         private readonly int $maxVectorMatches = 2,
     ) {
     }
@@ -36,7 +35,6 @@ PROMPT;
     {
         return $this->encodeJson([
             'mensaje' => $input->message,
-            'historial' => $this->normalizeHistory($input->history),
             'contexto' => $this->buildContextPayload($input->context, $input->tenant, $input->locale, $input->vectorContext, $input->qdrantHealth),
             'contexto_vectorial' => $this->normalizeVectorMatches($input->vectorContext),
             'recuperacion_error' => isset($input->vectorContext['error']) ? (string) $input->vectorContext['error'] : '',
@@ -58,7 +56,7 @@ No inventes hechos ni datos.
 PROMPT;
     }
 
-    public function buildSearchPlanUserPrompt(string $message, array $context, string $tenant, string $locale, array $history): string
+    public function buildSearchPlanUserPrompt(string $message, array $context, string $tenant, string $locale): string
     {
         return $this->encodeJson([
             'task' => 'rag_search_planning',
@@ -66,7 +64,6 @@ PROMPT;
             'locale' => $locale,
             'message' => $message,
             'context' => $this->buildSearchPlanContextPayload($context, $tenant, $locale),
-            'history' => $this->normalizeHistory($history),
             'output' => [
                 'should_search' => true,
                 'search_query' => 'Consulta breve para buscar en la base de conocimiento',
@@ -81,20 +78,6 @@ PROMPT;
                 'Devuelve JSON sin markdown ni texto adicional.',
             ],
         ]);
-    }
-
-    /**
-     * @param array<int, array<string, mixed>> $history
-     * @return array<int, array{role:string, content:string}>
-     */
-    private function normalizeHistory(array $history): array
-    {
-        return array_values(array_map(static function (array $item): array {
-            return [
-                'role' => (string) ($item['role'] ?? ''),
-                'content' => (string) ($item['content'] ?? ''),
-            ];
-        }, array_slice($history, -$this->maxHistoryItems)));
     }
 
     /**

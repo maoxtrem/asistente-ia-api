@@ -39,6 +39,10 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
                 ],
             ];
 
+            foreach ($this->normalizeHistoryMessages($input->history) as $historyMessage) {
+                $messages[] = $historyMessage;
+            }
+
             $resolvedUserPrompt = trim((string) ($userPrompt ?? ''));
             if ($resolvedUserPrompt === '') {
                 $resolvedUserPrompt = $this->promptBuilder->buildUserPrompt($input);
@@ -195,5 +199,34 @@ final class OpenAiCompatibleChatProvider implements ChatProviderAdapterInterface
             || str_contains($haystack, 'return only valid json')
             || str_contains($haystack, 'devuelve solo json')
             || str_contains($haystack, 'devuelve solo un objeto json');
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $history
+     * @return array<int, array{role:string, content:string}>
+     */
+    private function normalizeHistoryMessages(array $history): array
+    {
+        $normalized = [];
+
+        foreach (array_slice($history, -6) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $role = trim((string) ($item['role'] ?? ''));
+            $content = trim((string) ($item['content'] ?? ''));
+
+            if ($role === '' || $content === '') {
+                continue;
+            }
+
+            $normalized[] = [
+                'role' => $role,
+                'content' => $content,
+            ];
+        }
+
+        return $normalized;
     }
 }

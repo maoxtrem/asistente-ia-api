@@ -43,6 +43,13 @@ final class ChatToolPdfController
         $tenant = trim((string) ($payload['tenant'] ?? ''));
         $usuario = trim((string) ($payload['usuario'] ?? ''));
         $locale = $this->normalizeLocale($payload['locale'] ?? '');
+        $adjunto = is_array($payload['adjunto'] ?? null)
+            ? $payload['adjunto']
+            : (is_array($payload['archivo'] ?? null)
+                ? $payload['archivo']
+                : (is_array($payload['pdf'] ?? null) ? $payload['pdf'] : []));
+        $chatToolPdfMode = $this->resolveChatToolPdfMode($message, $tool);
+        $adjuntoAction = $adjunto !== [] ? ($chatToolPdfMode === 'document' ? 'document' : 'analysis') : 'chat';
         $requestContext = is_array($payload['context'] ?? null) ? $payload['context'] : [];
         $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
         $history = is_array($payload['history'] ?? null) ? $payload['history'] : [];
@@ -62,6 +69,34 @@ final class ChatToolPdfController
         }
 
         $conversationId = $this->resolveConversationId($conversationId);
+
+        if ($adjunto !== []) {
+            $adjuntoTexto = $this->extractAdjuntoPreview(
+                (string) ($adjunto['content_base64'] ?? ''),
+                (string) ($adjunto['mime_type'] ?? ''),
+                (string) ($adjunto['name'] ?? '')
+            );
+            $requestContext['adjunto'] = [
+                'has_attachment' => true,
+                'action' => $adjuntoAction,
+                'name' => (string) ($adjunto['name'] ?? ''),
+                'mime_type' => (string) ($adjunto['mime_type'] ?? ''),
+                'size' => (int) ($adjunto['size'] ?? 0),
+                'text_preview' => $adjuntoTexto['text_preview'],
+                'text_truncated' => $adjuntoTexto['text_truncated'],
+                'extraction_status' => $adjuntoTexto['status'],
+            ];
+            $metadata['adjunto'] = [
+                'has_attachment' => true,
+                'action' => $adjuntoAction,
+                'name' => (string) ($adjunto['name'] ?? ''),
+                'mime_type' => (string) ($adjunto['mime_type'] ?? ''),
+                'size' => (int) ($adjunto['size'] ?? 0),
+                'text_length' => $adjuntoTexto['text_length'],
+                'text_truncated' => $adjuntoTexto['text_truncated'],
+                'extraction_status' => $adjuntoTexto['status'],
+            ];
+        }
 
         if ($tool && ($tenant === '' || $usuario === '')) {
             $missingFields = [];
@@ -84,7 +119,7 @@ final class ChatToolPdfController
         }
 
         try {
-            if ($tool) {
+            if ($chatToolPdfMode === 'document') {
                 $aiResponse = $this->generationService->generateDocument(
                     message: $message,
                     tenant: $tenant,
@@ -278,6 +313,224 @@ final class ChatToolPdfController
         $normalized = strtolower(trim((string) ($locale ?? '')));
 
         return str_replace('_', '-', $normalized);
+    }
+
+    private function resolveChatToolPdfMode(string $message, bool $tool): string
+    {
+        $normalized = strtolower(trim($message));
+        $hasDocumentIntent = $this->containsAny($normalized, [
+            'crea',
+            'creame',
+            'crear',
+            'crea un pdf',
+            'genera',
+            'generar',
+            'genera un pdf',
+            'mejora',
+            'mejorar',
+            'edita',
+            'editar',
+            'basado en',
+            'basandote',
+            'basándote',
+            'convierte',
+            'transforma',
+            'formatea',
+            'construye',
+            'construir',
+            'haz un pdf',
+            'hacer un pdf',
+        ]);
+
+        if ($tool && $hasDocumentIntent) {
+            return 'document';
+        }
+
+        return 'chat';
+    }
+
+    /**
+     * @param array<int, string> $needles
+     */
+    private function containsAny(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
+     */
+    private function extractAdjuntoPreview(string $contentBase64, string $mimeType, string $fileName): array
+    {
+        $contentBase64 = trim($contentBase64);
+        if ($contentBase64 === '') {
+            return [
+                'status' => 'missing',
+                'text_preview' => '',
+                'text_length' => 0,
+                'text_truncated' => false,
+            ];
+        }
+
+        $normalizedMimeType = strtolower(trim($mimeType));
+        $normalizedFileName = strtolower(trim($fileName));
+        $binary = base64_decode($contentBase64, true);
+        if ($binary === false || $binary === '') {
+            return [
+                'status' => 'invalid_base64',
+                'text_preview' => '',
+                'text_length' => 0,
+                'text_truncated' => false,
+            ];
+        }
+
+        if ($this->isTextLikeAttachment($normalizedMimeType, $normalizedFileName)) {
+            $text = trim((string) $binary);
+            return $this->normalizePreviewText($text, 'ok');
+        }
+
+        if ($this->isPdfAttachment($normalizedMimeType, $normalizedFileName)) {
+            return $this->extractPdfPreviewFromBinary($binary);
+        }
+
+        return [
+            'status' => 'unsupported_binary',
+            'text_preview' => '',
+            'text_length' => 0,
+            'text_truncated' => false,
+        ];
+    }
+
+    /**
+     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
+     */
+    private function extractPdfPreviewFromBinary(string $binary): array
+    {
+        if (!function_exists('exec')) {
+            return [
+                'status' => 'execution_unavailable',
+                'text_preview' => '',
+                'text_length' => 0,
+                'text_truncated' => false,
+            ];
+        }
+
+        $tempPdf = tempnam(sys_get_temp_dir(), 'chattoolpdf_');
+        if ($tempPdf === false) {
+            return [
+                'status' => 'tempfile_error',
+                'text_preview' => '',
+                'text_length' => 0,
+                'text_truncated' => false,
+            ];
+        }
+
+        $tempTxt = $tempPdf . '.txt';
+        $exitCode = 1;
+        $output = [];
+        $text = '';
+
+        try {
+            if (file_put_contents($tempPdf, $binary) === false) {
+                return [
+                    'status' => 'write_error',
+                    'text_preview' => '',
+                    'text_length' => 0,
+                    'text_truncated' => false,
+                ];
+            }
+
+            $command = sprintf(
+                'pdftotext -layout %s %s 2>/dev/null',
+                escapeshellarg($tempPdf),
+                escapeshellarg($tempTxt)
+            );
+            exec($command, $output, $exitCode);
+
+            if ($exitCode === 0 && is_file($tempTxt)) {
+                $text = trim((string) file_get_contents($tempTxt));
+            }
+        } finally {
+            if (is_file($tempTxt)) {
+                @unlink($tempTxt);
+            }
+            if (is_file($tempPdf)) {
+                @unlink($tempPdf);
+            }
+        }
+
+        if ($text === '') {
+            return [
+                'status' => 'empty',
+                'text_preview' => '',
+                'text_length' => 0,
+                'text_truncated' => false,
+            ];
+        }
+
+        return $this->normalizePreviewText($text, 'ok');
+    }
+
+    /**
+     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
+     */
+    private function normalizePreviewText(string $text, string $status): array
+    {
+        $normalized = preg_replace("/[ \t]+/", ' ', $text) ?? $text;
+        $normalized = preg_replace("/\R{3,}/", "\n\n", $normalized) ?? $normalized;
+        $normalized = trim($normalized);
+
+        $maxLength = 12000;
+        $textLength = function_exists('mb_strlen') ? mb_strlen($normalized) : strlen($normalized);
+        $preview = $normalized;
+        $truncated = false;
+
+        if ($textLength > $maxLength) {
+            $preview = function_exists('mb_substr')
+                ? mb_substr($normalized, 0, $maxLength)
+                : substr($normalized, 0, $maxLength);
+            $preview = rtrim($preview) . "\n\n[contenido truncado]";
+            $truncated = true;
+        }
+
+        return [
+            'status' => $status,
+            'text_preview' => $preview,
+            'text_length' => $textLength,
+            'text_truncated' => $truncated,
+        ];
+    }
+
+    private function isTextLikeAttachment(string $mimeType, string $fileName): bool
+    {
+        if ($mimeType !== '' && str_starts_with($mimeType, 'text/')) {
+            return true;
+        }
+
+        if (in_array($mimeType, [
+            'application/json',
+            'application/xml',
+            'application/xhtml+xml',
+            'application/csv',
+            'application/yaml',
+            'application/x-yaml',
+            'application/javascript',
+        ], true)) {
+            return true;
+        }
+
+        return (bool) preg_match('/\.(txt|csv|json|xml|md|markdown|yml|yaml|html?|twig|log|ini|conf|sql|js|ts|css|scss|less|php|py|rb|go|sh|bat|ps1)$/', $fileName);
+    }
+
+    private function isPdfAttachment(string $mimeType, string $fileName): bool
+    {
+        return $mimeType === 'application/pdf' || str_ends_with($fileName, '.pdf');
     }
 
     private function normalizeBool(mixed $value): bool

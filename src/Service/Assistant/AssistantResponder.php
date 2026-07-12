@@ -193,7 +193,7 @@ final class AssistantResponder
                 qdrantHealth: $qdrantHealth,
                 extraInstruction: 'Devuelve solo JSON válido.',
                 systemPrompt: $this->promptBuilder->buildSearchPlanSystemPrompt(),
-                userPrompt: $this->promptBuilder->buildSearchPlanUserPrompt($message, $context, $tenant, $appLocale, $history)
+                userPrompt: $this->promptBuilder->buildSearchPlanUserPrompt($message, $context, $tenant, $appLocale)
             );
 
             $content = trim((string) ($response['content'] ?? ''));

@@ -1,14 +1,33 @@
 ###
-# chattoolpdf: modo pregunta
-# Respuesta esperada:
-# {
-#   "status": "success",
-#   "message": "respuesta directa de la IA"
-# }
-# Lectura del flujo:
-# - Cuando `tool=false`, el endpoint solo devuelve la respuesta conversacional.
-# - No genera PDF ni devuelve URL.
-# - `message` es el texto final que debe mostrar el frontend.
+# chattoolpdf request model
+#
+# Common fields:
+# - message: required
+# - tool: optional, default false
+# - tenant: required when tool=true
+# - usuario: required when tool=true
+# - locale: optional, default normalized by backend
+# - conversation_id: optional, reuse for the same thread
+# - client_key: optional, useful for tracing
+# - history: optional array of previous messages
+# - context: optional extra context for the model
+# - metadata: optional tracing/debug data
+#
+# Attachment fields:
+# - adjunto, archivo, or pdf: any of these can carry the attachment object
+# - content_base64: required when you want the backend to extract text from the file
+# - mime_type and name help the backend detect the file type
+# - adjunto_action is optional; the backend currently infers the mode from tool + message intent
+#
+# Backend behavior:
+# - tool=false -> conversational answer only, no PDF generation
+# - tool=true -> PDF generation is allowed, but only if the message expresses a document-generation intent
+# - tool=false and attachment -> attachment is treated as context for analysis/chat
+# - tool=true and attachment -> attachment is treated as context for document generation only when the message asks for it
+
+###
+# 1) Modo pregunta, sin adjunto
+# Use this when you want a direct conversational answer.
 POST https://asistente-ia-api.localhost/api/chattoolpdf
 Content-Type: application/json
 Accept: application/json
@@ -16,32 +35,114 @@ Accept: application/json
 {
   "message": "Hola, que puedes hacer?",
   "tool": false,
-  "locale": "es"
+  "locale": "es",
+  "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f80",
+  "client_key": "cliente-demo",
+  "history": [
+    {
+      "role": "user",
+      "content": "Hola"
+    },
+    {
+      "role": "assistant",
+      "content": "Hola, en que te ayudo?"
+    }
+  ]
 }
 
 ###
-# chattoolpdf: modo PDF
-# Respuesta esperada:
-# {
-#   "status": "success",
-#   "message": "resumen de lo que la IA construyo",
-#   "pdf_url": "url final del PDF"
-# }
-# Otros estados posibles:
-# - `pending`: faltan datos para continuar.
-# - `error`: la IA, OpenAI o service-pdf fallaron.
-# Lectura del flujo:
-# - Cuando `tool=true`, la IA genera HTML + JSON, luego el microservicio llama a service-pdf.
-# - `message` debe describir el documento generado.
-# - `pdf_url` es el enlace final para abrir el PDF.
+# 2) Modo pregunta, con adjunto
+# Use this when you want the model to explain or summarize the attachment.
 POST https://asistente-ia-api.localhost/api/chattoolpdf
 Content-Type: application/json
 Accept: application/json
 
 {
-  "message": "Genera una cotizacion formal, corporativa y visualmente cuidada para un servicio de consultoria estrategica y auditoria tecnica. El documento debe parecer una pieza comercial lista para enviar a cliente, con un encabezado fuerte, un logo real usa este https://ospprojectestimate.com/web/icono.png o isotipo visual, nombre de marca, subtitulo elegante, una paleta sobria en tonos oscuros y azules, separadores claros, tipografia limpia, seccion de datos del cliente, tabla detallada de servicios, subtotales, impuestos y total final. No uses la palabra logo como texto plano; crea una marca visual estetica usando imagen, SVG o un bloque grafico. Usa el nombre del cliente Demo SAS y el NIT 900123456-7. Incluye exactamente estos servicios: consultoria estrategica por 10 horas a 120000 y auditoria tecnica por 8 horas a 95000. El resultado debe ser profesional, claro, ordenado y con estilo moderno. Si necesitas completar algo, infierelo a partir de la solicitud, pero no inventes datos numéricos.",
+  "message": "Resume el contenido del archivo adjunto y dame los puntos clave.",
+  "tool": false,
+  "locale": "es",
+  "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f81",
+  "client_key": "cliente-demo",
+  "adjunto": {
+    "name": "resumen.txt",
+    "mime_type": "text/plain",
+    "size": 30,
+    "content_base64": "UmV2aXNhIGVsIGRvY3VtZW50by4="
+  }
+}
+
+###
+# 3) Modo generativo, sin adjunto
+# Use this when you want the AI to create a PDF document from the prompt.
+POST https://asistente-ia-api.localhost/api/chattoolpdf
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "Genera una cotizacion formal para un servicio de consultoria estrategica para Demo SAS.",
   "tool": true,
   "tenant": "tenant-demo",
   "usuario": "usuario-demo",
-  "locale": "es"
+  "locale": "es",
+  "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f82",
+  "client_key": "cliente-demo"
 }
+
+###
+# 4) Modo generativo, con adjunto
+# Use this when the PDF should be based on the attached file.
+POST https://asistente-ia-api.localhost/api/chattoolpdf
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "Convierte este archivo en una propuesta comercial profesional y moderna.",
+  "tool": true,
+  "tenant": "tenant-demo",
+  "usuario": "usuario-demo",
+  "locale": "es",
+  "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f83",
+  "client_key": "cliente-demo",
+  "adjunto_action": "document",
+  "adjunto": {
+    "name": "propuesta.txt",
+    "mime_type": "text/plain",
+    "size": 44,
+    "content_base64": "UHJvcHVlc3RhIGRlIHNlcnZpY2lvcyB5IHByZWNpb3Mu"
+  }
+}
+
+###
+# Notes
+# - If adjunto_action is omitted, the backend infers it.
+# - If you send a PDF, the backend tries to extract text with pdftotext.
+# - For binary files, replace content_base64 with the real file content encoded in base64.
+
+###
+# 5) Modo pregunta con PDF local de prueba
+# Use this commented block to test the endpoint with the local PDF:
+# /home/maoxtrem/proyectos/entorno_desarrollo_local/dev/asistente-ia-api/c5f9c23436266d0e3f3a8a283304d062065705dc213b2df8001de720409aecb0.pdf
+#
+# To generate content_base64 locally, run:
+# base64 -w 0 /home/maoxtrem/proyectos/entorno_desarrollo_local/dev/asistente-ia-api/c5f9c23436266d0e3f3a8a283304d062065705dc213b2df8001de720409aecb0.pdf
+#
+# Then paste the result into content_base64 below and uncomment the request.
+#
+# POST https://asistente-ia-api.localhost/api/chattoolpdf
+# Content-Type: application/json
+# Accept: application/json
+#
+# {
+#   "message": "Explica este documento y dame un resumen de sus puntos clave.",
+#   "tool": false,
+#   "locale": "es",
+#   "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f84",
+#   "client_key": "cliente-demo",
+#   "adjunto_action": "analysis",
+#   "adjunto": {
+#     "name": "c5f9c23436266d0e3f3a8a283304d062065705dc213b2df8001de720409aecb0.pdf",
+#     "mime_type": "application/pdf",
+#     "size": 605184,
+#     "content_base64": "<BASE64_DEL_PDF>"
+#   }
+# }

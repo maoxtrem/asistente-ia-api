@@ -9,10 +9,18 @@ final class ChatToolPdfPromptBuilder
     public function buildQuestionSystemPrompt(): string
     {
         return <<<'PROMPT'
-Eres un asistente conversacional para una herramienta empresarial.
-Responde solo texto plano, sin markdown, sin listas innecesarias y sin mencionar procesos internos.
-Si falta información, pide una sola aclaración breve.
-Si la pregunta es clara, responde de forma directa, útil y corta.
+You are a conversational assistant for an enterprise tool.
+Reply with plain text only, without markdown, unnecessary lists, or mentions of internal processes.
+If information is missing, ask for one brief clarification only.
+If the question is clear, respond directly, usefully, and briefly.
+Follow the response language specified in the payload when present.
+If the user's question is clearly in Spanish, answer in Spanish.
+If the user's question is clearly in English, answer in English.
+If the question mixes languages, use the dominant language of the question and keep technical terms natural.
+If locale conflicts with the question, prioritize the question language.
+If the context includes an attachment with text_preview, use it as the main source for the answer.
+If the user asks to explain, summarize, review, or analyze the attached PDF, answer from the attachment instead of asking for more context.
+If there is an attachment but no readable text was extracted, say so briefly and explain the limitation instead of inventing content.
 PROMPT;
     }
 
@@ -36,12 +44,20 @@ PROMPT;
             'usuario' => $usuario,
             'entorno' => $entorno,
             'locale' => $locale !== '' ? $locale : 'es',
+            'response_language' => $this->resolveResponseLanguage($locale, $message),
             'history' => $this->normalizeHistory($history),
             'context' => $this->normalizeContext($context),
             'rules' => [
                 'Answer directly in plain text.',
                 'Do not output JSON.',
                 'Do not mention internal tools unless the user asks.',
+                'Use response_language as the primary language directive.',
+                'If the user writes in Spanish, answer in Spanish.',
+                'If the user writes in English, answer in English.',
+                'If the user mixes Spanish and English, respond in the dominant language of the message.',
+                'If context.adjunto.text_preview is present, base the answer on the attachment.',
+                'If context.adjunto.has_attachment is true and the user asks about the PDF, do not ask what document it is about.',
+                'If context.adjunto.extraction_status indicates no readable text, say that briefly instead of pretending the file was read.',
             ],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
@@ -49,48 +65,67 @@ PROMPT;
     public function buildPdfSystemPrompt(): string
     {
         return <<<'PROMPT'
-Eres un generador de documentos para un microservicio de PDF.
-Debes responder solo con JSON valido, sin markdown, sin bloques de codigo y sin texto adicional.
-Tu tarea es convertir la peticion del usuario en una plantilla HTML/Twig y un objeto JSON compatible con el servicio de PDF.
-La fuente principal de verdad es la pregunta del usuario: extrae de ahí el tipo de documento, el contenido, los datos, el estilo y la intención.
-No dependas de context para inventar información que ya está en la pregunta.
-Si la pregunta describe el diseño, respeta esas indicaciones de estilo de forma visible en el HTML.
-Si la pregunta no describe diseño, usa un estilo corporativo limpio, moderno y sobrio.
+You are a document generator for a PDF microservice.
+You must respond with valid JSON only, without markdown, code blocks, or extra text.
+Your task is to turn the user's request into an HTML/Twig template and a JSON object compatible with the PDF service.
+The primary source of truth is the user's question: extract the document type, content, data, style, and intent from it.
+Do not rely on context to invent information that already exists in the question.
+If the question describes the design, reflect those style instructions visibly in the HTML.
+If the question does not describe a design, use a clean, modern, sober corporate style.
+Follow the response language specified in the payload when present.
+If the user's question is clearly in Spanish, write the JSON message and any clarifying question in Spanish.
+If the user's question is clearly in English, write them in English.
+If the question mixes both languages, use the dominant language of the request.
+If the context indicates adjunto.action = analysis, treat the attachment as the source for explanation or summarization.
+If the context indicates adjunto.action = document, use the attachment as the base to create or improve a document.
+If the context includes an attachment with text_preview, use it as the main content source for interpreting the document.
+Do not ignore the attachment if it contains extracted text; use it to complete, correct, explain, or summarize the requested information.
+If the user asks to explain all, summarize all, review all, or says "todo", "everything", or "whole document", treat it as a request to process the entire attachment, not a partial excerpt.
+If an attachment is present but the extracted text is incomplete, continue with the available content instead of asking for the file again.
+If the attachment has no readable extracted text, say that clearly and briefly in the same language as the user's question.
 
-Reglas:
-- Si falta informacion critica para construir el documento, responde con status = "needs_clarification".
-- En ese caso, message debe ser una sola pregunta breve en español o ingles depende de idioma de la pregunta.
-- missing_fields debe listar los campos faltantes.
-- Si la informacion es suficiente, responde con status = "ready".
-- Si el usuario pide valores de prueba, aleatorios, demo, ejemplo, mock o una cotizacion de prueba, trátalo como una solicitud suficiente.
-- En ese caso, puedes generar valores numericos coherentes para ejemplo sin pedir aclaracion, y el message debe dejar claro que son datos de demostracion.
-- Cuando status sea "ready", html debe contener una plantilla HTML completa o un fragmento HTML bien formado.
-- La plantilla HTML puede usar sintaxis Twig y debe coincidir con las claves del objeto json.
-- json debe contener solo los datos necesarios para renderizar el html.
-- No inventes datos sensibles.
-- Usa exactamente los valores numéricos y nombres que aparezcan en la pregunta, salvo cuando el usuario pida explícitamente datos de prueba o aleatorios.
-- Si la pregunta pide logo, marca, color, tabla, encabezado, subtitulo o estilo, incluyelos en el html.
-- Si el documento es corporativo, incluye una marca visual real: una imagen `img`, un isotipo SVG embebido o un logo vectorial sencillo. No uses solo la palabra "Logo" como texto decorativo.
-- Si la pregunta incluye nombres, valores, cantidades o totales, reflejalos en el json y úsalos en el html.
-- Si la pregunta no indica impuestos, no inventes impuestos ni porcentajes.
-- Si la pregunta sí indica impuestos, calcula y muestra subtotal, impuesto y total.
-- Si la pregunta no trae datos suficientes para un documento coherente, pide exactamente lo que falta.
-- El campo message debe resumir de forma concreta qué documento creaste, para quién, y si aplica, qué estilo o composición usaste.
-- Usa paper_size con valores comunes como A4 o LETTER.
-- Usa orientation con valores portrait o landscape.
-- Mantén el tono profesional y la estructura clara.
-- Usa HTML semántico cuando aporte claridad visual: `header`, `section`, `footer`, `article`, `nav`, `aside`, `main`, `figure`, `figcaption`.
-- Si el diseño lo amerita, puedes combinar semántica HTML5 con `div` y `table`.
+Rules:
+- If critical information is missing to build the document, respond with status = "needs_clarification".
+- In that case, message must be a single brief question in the same language as the user's question.
+- missing_fields must list the missing fields.
+- If the information is sufficient, respond with status = "ready".
+- If the user asks for test, random, demo, example, mock, or sample quote values, treat it as sufficient input.
+- In that case, you may generate coherent numeric example values without asking for clarification, and the message must make clear that the data is for demonstration.
+- When status is "ready", html must contain a full HTML template or a well-formed HTML fragment.
+- The HTML template may use Twig syntax and must match the keys in the JSON object.
+- json must contain only the data needed to render the html.
+- Do not invent sensitive data.
+- Use exactly the numeric values and names that appear in the question, except when the user explicitly asks for test or random data.
+- If the question asks for a logo, brand, color, table, header, subtitle, or style, include it in the html.
+- If the document is corporate, include a real visual brand mark: an `img`, an embedded SVG icon, or a simple vector logo. Do not use only the word "Logo" as decorative text.
+- If the question includes names, values, quantities, or totals, reflect them in the json and use them in the html.
+- If the question does not mention taxes, do not invent taxes or percentages.
+- If the question does mention taxes, calculate and display subtotal, tax, and total.
+- If the question does not provide enough data for a coherent document, ask for exactly what is missing.
+- The message field must concisely summarize what document was created, for whom, and, if applicable, what style or composition was used.
+- Use paper_size with common values such as A4 or LETTER.
+- Use orientation with values portrait or landscape.
+- Keep the tone professional and the structure clear.
+- Use semantic HTML when it improves visual clarity: `header`, `section`, `footer`, `article`, `nav`, `aside`, `main`, `figure`, `figcaption`.
+- If the design benefits from it, you may combine HTML5 semantics with `div` and `table`.
 
-Esquema de salida:
+Output schema:
 {
   "status": "ready|needs_clarification",
-  "message": "texto breve",
+  "message": "brief text",
   "missing_fields": [],
   "paper_size": "A4",
   "orientation": "portrait",
   "html": "<!doctype html>...</html>",
   "json": {}
+}
+
+Example:
+{
+  "html": "<h1>{{ titulo }}</h1>",
+  "json": {
+    "titulo": "Invoice"
+  }
 }
 PROMPT;
     }
@@ -115,11 +150,12 @@ PROMPT;
             'usuario' => $usuario,
             'entorno' => $entorno,
             'locale' => $locale !== '' ? $locale : 'es',
+            'response_language' => $this->resolveResponseLanguage($locale, $message),
             'history' => $this->normalizeHistory($history),
             'context' => $this->normalizeContext($context),
             'output_schema' => [
                 'status' => 'ready',
-                'message' => 'Resumen breve de la accion realizada.',
+                'message' => 'Brief summary of the action performed.',
                 'missing_fields' => [],
                 'paper_size' => 'A4',
                 'orientation' => 'portrait',
@@ -139,8 +175,52 @@ PROMPT;
                 'Keep json keys aligned with the html placeholders.',
                 'If the request includes styling hints, include them in the html.',
                 'If more information is needed, ask one concise question.',
+                'Use response_language as the primary language directive.',
+                'If the user writes in Spanish, answer in Spanish.',
+                'If the user writes in English, answer in English.',
+                'If the user mixes Spanish and English, respond in the dominant language of the message.',
+                'If context.adjunto.text_preview is present, use it as the source for the explanation or summary.',
+                'If context.adjunto.has_attachment is true and the message asks about the attached PDF, do not respond with a generic request for more context.',
+                'If the attachment has no readable extracted text, explain that briefly and do not invent content.',
             ],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     * @return array<string, mixed>
+     */
+    private function normalizeContext(array $context): array
+    {
+        return [
+            'pathname' => trim((string) ($context['pathname'] ?? '')),
+            'document_type' => trim((string) ($context['document_type'] ?? '')),
+            'theme' => trim((string) ($context['theme'] ?? '')),
+            'notes' => trim((string) ($context['notes'] ?? '')),
+            'adjunto' => $this->normalizeAdjunto($context['adjunto'] ?? null),
+        ];
+    }
+
+    /**
+     * @param mixed $adjunto
+     * @return array<string, mixed>
+     */
+    private function normalizeAdjunto(mixed $adjunto): array
+    {
+        if (!is_array($adjunto) || $adjunto === []) {
+            return [];
+        }
+
+        return [
+            'name' => trim((string) ($adjunto['name'] ?? '')),
+            'mime_type' => trim((string) ($adjunto['mime_type'] ?? '')),
+            'size' => (int) ($adjunto['size'] ?? 0),
+            'has_attachment' => (bool) ($adjunto['has_attachment'] ?? false),
+            'action' => trim((string) ($adjunto['action'] ?? '')),
+            'text_preview' => trim((string) ($adjunto['text_preview'] ?? '')),
+            'text_truncated' => (bool) ($adjunto['text_truncated'] ?? false),
+            'extraction_status' => trim((string) ($adjunto['extraction_status'] ?? '')),
+        ];
     }
 
     /**
@@ -157,17 +237,74 @@ PROMPT;
         }, array_slice($history, -6)));
     }
 
-    /**
-     * @param array<string, mixed> $context
-     * @return array<string, mixed>
-     */
-    private function normalizeContext(array $context): array
+    private function resolveResponseLanguage(string $locale, string $message): string
     {
-        return [
-            'pathname' => trim((string) ($context['pathname'] ?? '')),
-            'document_type' => trim((string) ($context['document_type'] ?? '')),
-            'theme' => trim((string) ($context['theme'] ?? '')),
-            'notes' => trim((string) ($context['notes'] ?? '')),
+        $normalizedMessage = strtolower(trim($message));
+        $normalizedLocale = strtolower(trim(str_replace('_', '-', $locale)));
+
+        $spanishSignals = [
+            '¿',
+            '¡',
+            ' qué ',
+            ' como ',
+            ' cómo ',
+            'explicame',
+            'explícame',
+            ' explica',
+            'explica',
+            ' resumen',
+            'resumeme',
+            'resúmeme',
+            ' revisa',
+            'revisar',
+            'analiza',
+            ' adjunto',
+            ' documento',
+            ' todo',
+            'pdf',
         ];
+        $englishSignals = [
+            ' what ',
+            ' how ',
+            ' explain',
+            ' summary',
+            ' review',
+            ' attachment',
+            ' document',
+        ];
+
+        $spanishScore = 0;
+        foreach ($spanishSignals as $signal) {
+            if (str_contains($normalizedMessage, $signal)) {
+                $spanishScore++;
+            }
+        }
+
+        $englishScore = 0;
+        foreach ($englishSignals as $signal) {
+            if (str_contains($normalizedMessage, $signal)) {
+                $englishScore++;
+            }
+        }
+
+        if ($spanishScore > $englishScore) {
+            return 'es';
+        }
+
+        if ($englishScore > $spanishScore) {
+            return 'en';
+        }
+
+        if ($normalizedLocale !== '') {
+            if (str_starts_with($normalizedLocale, 'es')) {
+                return 'es';
+            }
+
+            if (str_starts_with($normalizedLocale, 'en')) {
+                return 'en';
+            }
+        }
+
+        return 'auto';
     }
 }
