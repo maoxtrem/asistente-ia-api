@@ -6,7 +6,7 @@ namespace App\Entity;
 
 use Doctrine\ORM\Mapping as ORM;
 
-#[ORM\Entity]
+#[ORM\Entity(repositoryClass: 'App\Repository\ChatKnowledgeCandidateRepository')]
 #[ORM\Table(name: 'chat_knowledge_candidates')]
 class ChatKnowledgeCandidate
 {

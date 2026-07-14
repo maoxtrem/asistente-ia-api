@@ -8,6 +8,7 @@ use App\Contract\ChatProviderInterface;
 use App\DTO\FeedbackAnalysisPromptInput;
 use App\DTO\FeedbackRequest;
 use App\DTO\IndexDocument;
+use App\Repository\ChatHistoryRepository;
 use App\Service\Ai\Chat\FeedbackAnalysisPromptBuilder;
 use App\Service\Vector\IndexDocumentProcessor;
 use Throwable;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Service\Assistant;
+namespace App\Repository;
 
 use App\Entity\ChatConversation;
 use App\Entity\ChatFeedback;
@@ -18,6 +18,9 @@ final class ChatHistoryRepository
 
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
+        private readonly ChatConversationRepository $conversationRepository,
+        private readonly ChatMessageRepository $messageRepository,
+        private readonly ChatKnowledgeCandidateRepository $candidateRepository,
     ) {
     }
 
@@ -26,7 +29,7 @@ final class ChatHistoryRepository
         $conversationId = $this->normalizeConversationId($conversationId);
         $now = $this->utcNow();
 
-        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
+        $conversation = $this->conversationRepository->find($conversationId);
 
         if (!$conversation instanceof ChatConversation) {
             $conversation = new ChatConversation($conversationId, $tenant, $now);
@@ -62,7 +65,7 @@ final class ChatHistoryRepository
 
         $this->entityManager->persist($message);
 
-        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
+        $conversation = $this->conversationRepository->find($conversationId);
         if ($conversation instanceof ChatConversation) {
             $conversation->touch($now);
         }
@@ -117,10 +120,7 @@ final class ChatHistoryRepository
         $now = $this->utcNow();
         $indexedAt = $this->normalizeDateTimeValue($analysis['indexed_at'] ?? null);
 
-        /** @var ChatKnowledgeCandidate|null $candidate */
-        $candidate = $this->entityManager->getRepository(ChatKnowledgeCandidate::class)->findOneBy([
-            'candidateKey' => $candidateKey,
-        ]);
+        $candidate = $this->candidateRepository->findOneByCandidateKey($candidateKey);
 
         if (!$candidate instanceof ChatKnowledgeCandidate) {
             $candidate = new ChatKnowledgeCandidate(
@@ -165,20 +165,7 @@ final class ChatHistoryRepository
     public function fetchMessages(string $conversationId, string $tenant, int $limit = 20): array
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-
-        $rows = $this->entityManager->createQueryBuilder()
-            ->select('message')
-            ->from(ChatMessage::class, 'message')
-            ->where('message.conversationId = :conversationId')
-            ->andWhere('message.tenant = :tenant')
-            ->setParameter('conversationId', $conversationId)
-            ->setParameter('tenant', $tenant)
-            ->orderBy('message.id', 'DESC')
-            ->setMaxResults(max(1, $limit))
-            ->getQuery()
-            ->getResult();
-
-        $rows = array_reverse($rows);
+        $messages = $this->messageRepository->findRecentByConversation($conversationId, $tenant, $limit);
 
         return array_map(static function (ChatMessage $message): array {
             return [
@@ -187,15 +174,14 @@ final class ChatHistoryRepository
                 'created_at' => $message->getCreatedAt()->format(DATE_ATOM),
                 'metadata' => $message->getMetadata(),
             ];
-        }, $rows);
+        }, $messages);
     }
 
     public function conversationExists(string $conversationId, string $tenant): bool
     {
         $conversationId = $this->normalizeConversationId($conversationId);
 
-        /** @var ChatConversation|null $conversation */
-        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
+        $conversation = $this->conversationRepository->find($conversationId);
 
         return $conversation instanceof ChatConversation && $conversation->getTenant() === $tenant;
     }
