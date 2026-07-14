@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use PDO;
-use PDOException;
-use RuntimeException;
+use Doctrine\DBAL\Connection;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -19,16 +17,14 @@ use Symfony\Component\Console\Output\OutputInterface;
 final class InitDatabaseCommand extends Command
 {
     public function __construct(
-        private readonly string $databaseUrl,
+        private readonly Connection $connection,
     ) {
         parent::__construct();
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $pdo = $this->createPdo($this->databaseUrl);
-
-        $pdo->exec(<<<'SQL'
+        $this->connection->executeStatement(<<<'SQL'
 CREATE TABLE IF NOT EXISTS chat_conversations (
     id CHAR(32) NOT NULL,
     tenant VARCHAR(120) NOT NULL,
@@ -42,7 +38,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL);
 
-        $pdo->exec(<<<'SQL'
+        $this->connection->executeStatement(<<<'SQL'
 CREATE TABLE IF NOT EXISTS chat_messages (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     conversation_id CHAR(32) NOT NULL,
@@ -60,7 +56,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL);
 
-        $pdo->exec(<<<'SQL'
+        $this->connection->executeStatement(<<<'SQL'
 CREATE TABLE IF NOT EXISTS chat_feedback (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     conversation_id CHAR(32) NOT NULL,
@@ -77,7 +73,7 @@ CREATE TABLE IF NOT EXISTS chat_feedback (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL);
 
-        $pdo->exec(<<<'SQL'
+        $this->connection->executeStatement(<<<'SQL'
 CREATE TABLE IF NOT EXISTS chat_knowledge_candidates (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     candidate_key CHAR(64) NOT NULL,
@@ -110,45 +106,22 @@ CREATE TABLE IF NOT EXISTS chat_knowledge_candidates (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL);
 
+        $this->connection->executeStatement(<<<'SQL'
+CREATE TABLE IF NOT EXISTS html_templates (
+    id INT NOT NULL AUTO_INCREMENT,
+    uuid VARCHAR(36) NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    html_content LONGTEXT NOT NULL,
+    json_content JSON NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_html_templates_uuid (uuid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SQL);
+
         $output->writeln('<info>Base de datos inicializada correctamente.</info>');
 
         return Command::SUCCESS;
-    }
-
-    private function createPdo(string $databaseUrl): PDO
-    {
-        $parts = parse_url($databaseUrl);
-        if (!is_array($parts)) {
-            throw new RuntimeException('DATABASE_URL no tiene un formato valido.');
-        }
-
-        $scheme = (string) ($parts['scheme'] ?? '');
-        if (!in_array($scheme, ['mysql', 'mariadb'], true)) {
-            throw new RuntimeException('DATABASE_URL debe usar mysql o mariadb.');
-        }
-
-        $host = (string) ($parts['host'] ?? '127.0.0.1');
-        $port = (string) ($parts['port'] ?? '3306');
-        $path = trim((string) ($parts['path'] ?? ''), '/');
-        $query = [];
-        parse_str((string) ($parts['query'] ?? ''), $query);
-        $charset = (string) ($query['charset'] ?? 'utf8mb4');
-
-        $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=%s', $host, $port, $path, $charset);
-
-        try {
-            return new PDO(
-                $dsn,
-                isset($parts['user']) ? rawurldecode((string) $parts['user']) : null,
-                isset($parts['pass']) ? rawurldecode((string) $parts['pass']) : null,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false,
-                ]
-            );
-        } catch (PDOException $exception) {
-            throw new RuntimeException(sprintf('No fue posible conectar con la base de datos: %s', $exception->getMessage()), 0, $exception);
-        }
     }
 }

@@ -8,7 +8,6 @@
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
     app.assistant_name: '%env(string:ASSISTANT_NAME)%'
-    app.database_url: '%env(string:DATABASE_URL)%'
     app.qdrant_url: '%env(string:QDRANT_URL)%'
     app.chat_qdrant_collection: '%env(string:QDRANT_CHAT_COLLECTION)%'
     app.embedding_provider_url: '%env(string:EMBEDDING_PROVIDER_URL)%'
@@ -30,6 +29,7 @@ parameters:
     app.chattoolpdf_environment: '%env(string:CHATTOOLPDF_ENVIRONMENT)%'
     app.chattoolpdf_service_url: '%env(string:CHATTOOLPDF_SERVICE_URL)%'
     app.chattoolpdf_service_host: '%env(string:CHATTOOLPDF_SERVICE_HOST)%'
+    app.tika_url: '%env(string:TIKA_URL)%'
     app.canvas_image_environment: '%env(string:CANVAS_IMAGE_ENVIRONMENT)%'
     app.qdrant_allowed_document_kinds:
         - chat_knowledge
@@ -127,14 +127,14 @@ services:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
 
-    App\Service\Assistant\ChatHistoryRepository:
-        arguments:
-            $databaseUrl: '%app.database_url%'
-
     App\Service\ChatToolPdf\PdfImageClient:
         arguments:
             $servicePdfUrl: '%app.chattoolpdf_service_url%'
             $servicePdfHost: '%app.chattoolpdf_service_host%'
+
+    App\Service\ChatToolPdf\TikaTextExtractor:
+        arguments:
+            $tikaUrl: '%app.tika_url%'
 
     App\Service\Canvas\CanvasGenerationService:
         arguments:
@@ -166,10 +166,6 @@ services:
     App\Command\ReindexQdrantCollectionCommand:
         arguments:
             $qdrantCollection: '%app.chat_qdrant_collection%'
-
-    App\Command\InitDatabaseCommand:
-        arguments:
-            $databaseUrl: '%app.database_url%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

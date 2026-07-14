@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace App\Controller\Api;
 
 use App\Service\ChatToolPdf\ChatToolPdfGenerationService;
+use App\Service\ChatToolPdf\PdfAttachmentPreviewExtractor;
 use App\Service\ChatToolPdf\PdfClient;
+use App\Service\ChatToolPdf\PdfVisionExtractor;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use Throwable;
 
@@ -17,11 +20,338 @@ final class ChatToolPdfController
 {
     public function __construct(
         private readonly ChatToolPdfGenerationService $generationService,
+        private readonly PdfAttachmentPreviewExtractor $attachmentPreviewExtractor,
+        private readonly PdfVisionExtractor $pdfVisionExtractor,
         private readonly PdfClient $servicePdfClient,
         private readonly LoggerInterface $logger,
         private readonly string $assistantName,
         private readonly string $chattoolpdfEnvironment,
     ) {
+    }
+
+    #[Route('/debug/chattoolpdf', name: 'debug_chattoolpdf', methods: ['GET'])]
+    public function debug(Request $request): Response
+    {
+        $message = (string) $request->query->get('message', 'explicar este pdf');
+        $tenant = (string) $request->query->get('tenant', 'projects');
+        $usuario = (string) $request->query->get('usuario', 'services@onlinesoftwarepro.com');
+        $locale = (string) $request->query->get('locale', 'es');
+        $tool = (string) $request->query->get('tool', '0');
+        $conversationId = (string) $request->query->get('conversation_id', '');
+        $clientKey = (string) $request->query->get('client_key', '');
+        $messageEsc = $this->escapeHtml($message);
+        $tenantEsc = $this->escapeHtml($tenant);
+        $usuarioEsc = $this->escapeHtml($usuario);
+        $localeEsc = $this->escapeHtml($locale);
+        $conversationIdEsc = $this->escapeHtml($conversationId);
+        $clientKeyEsc = $this->escapeHtml($clientKey);
+        $toolFalseSelected = $tool === '0' ? 'selected' : '';
+        $toolTrueSelected = $tool === '1' ? 'selected' : '';
+
+        $html = <<<HTML
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Debug ChatToolPdf</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1f2430;
+      --text: #e8eaf0;
+      --muted: #9ca3af;
+      --border: #2b3240;
+      --accent: #7dd3fc;
+      --accent-2: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #18202b 0%, var(--bg) 42%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 20px;
+    }
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 20px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(31,36,48,.96), rgba(23,26,33,.96));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 20px 45px rgba(0,0,0,.25);
+    }
+    .field { margin-bottom: 14px; }
+    label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input, textarea, select, button {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 12px 14px;
+      font: inherit;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .row-3 {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr .8fr;
+      gap: 12px;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      color: #00111d;
+      font-weight: 700;
+      border: none;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0b0d12;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 240px;
+      color: #dbeafe;
+    }
+    .status {
+      margin-bottom: 12px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 8px;
+    }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      .hero { align-items: start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>Debug ChatToolPdf</h1>
+        <p>Formulario local para enviar un payload JSON con PDF base64 al endpoint <code>/api/chattoolpdf</code>.</p>
+      </div>
+      <div class="hint">Archivo adjunto, lectura en navegador y envío directo al microservicio.</div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <form id="debug-form">
+          <div class="field">
+            <label for="message">Message</label>
+            <textarea id="message" name="message">{$messageEsc}</textarea>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="tenant">Tenant</label>
+              <input id="tenant" name="tenant" value="{$tenantEsc}">
+            </div>
+            <div class="field">
+              <label for="usuario">Usuario</label>
+              <input id="usuario" name="usuario" value="{$usuarioEsc}">
+            </div>
+          </div>
+          <div class="row-3">
+            <div class="field">
+              <label for="locale">Locale</label>
+              <input id="locale" name="locale" value="{$localeEsc}">
+            </div>
+            <div class="field">
+              <label for="tool">Tool</label>
+              <select id="tool" name="tool">
+                <option value="0" {$toolFalseSelected}>false</option>
+                <option value="1" {$toolTrueSelected}>true</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="conversation_id">Conversation ID</label>
+              <input id="conversation_id" name="conversation_id" value="{$conversationIdEsc}" placeholder="opcional">
+            </div>
+          </div>
+          <div class="field">
+            <label for="client_key">Client Key</label>
+            <input id="client_key" name="client_key" value="{$clientKeyEsc}" placeholder="opcional">
+          </div>
+          <div class="field">
+            <label for="adjunto">Adjunto PDF</label>
+            <input id="adjunto" name="adjunto" type="file" accept="application/pdf,.pdf">
+          </div>
+          <div class="actions">
+            <button type="submit">Enviar</button>
+            <button type="button" class="secondary" id="reset-btn">Limpiar salida</button>
+          </div>
+          <div class="hint">
+            El archivo se lee en el navegador y se manda como <code>content_base64</code> para simular exactamente el payload del host.
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="status" id="status">Esperando envío...</div>
+        <pre id="output"></pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('debug-form');
+    const output = document.getElementById('output');
+    const statusNode = document.getElementById('status');
+    const resetBtn = document.getElementById('reset-btn');
+
+    const setOutput = (value) => {
+      output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    };
+
+    const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('No fue posible leer el archivo.'));
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        const commaIndex = result.indexOf(',');
+        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : '');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      statusNode.textContent = 'Leyendo archivo y enviando...';
+
+      try {
+        const formData = new FormData(form);
+        const file = formData.get('adjunto');
+
+        const payload = {
+          message: String(formData.get('message') || '').trim(),
+          tenant: String(formData.get('tenant') || '').trim(),
+          usuario: String(formData.get('usuario') || '').trim(),
+          locale: String(formData.get('locale') || '').trim(),
+          tool: String(formData.get('tool') || '0') === '1',
+          conversation_id: String(formData.get('conversation_id') || '').trim(),
+          client_key: String(formData.get('client_key') || '').trim(),
+          history: [],
+        };
+
+        if (file && file.size > 0) {
+          const contentBase64 = await readFileAsBase64(file);
+          payload.adjunto = {
+            name: file.name,
+            mime_type: file.type || 'application/pdf',
+            size: file.size,
+            content_base64: contentBase64,
+          };
+          payload.context = {
+            adjunto: {
+              has_attachment: true,
+              name: file.name,
+              mime_type: file.type || 'application/pdf',
+              size: file.size,
+              action: 'analysis',
+            },
+          };
+        }
+
+        setOutput(payload);
+
+        const response = await fetch('/api/chattoolpdf', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const text = await response.text();
+        let parsed = text;
+        try {
+          parsed = JSON.parse(text);
+        } catch (error) {}
+
+        statusNode.textContent = 'Respuesta recibida';
+        setOutput({
+          request: payload,
+          responseStatus: response.status,
+          response: parsed,
+        });
+      } catch (error) {
+        statusNode.textContent = 'Error al enviar';
+        setOutput({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    resetBtn.addEventListener('click', () => {
+      output.textContent = '';
+      statusNode.textContent = 'Esperando envío...';
+    });
+  </script>
+</body>
+</html>
+HTML;
+
+        return new Response($html);
     }
 
     #[Route('/api/chattoolpdf', name: 'api_chattoolpdf', methods: ['POST'])]
@@ -48,8 +378,7 @@ final class ChatToolPdfController
             : (is_array($payload['archivo'] ?? null)
                 ? $payload['archivo']
                 : (is_array($payload['pdf'] ?? null) ? $payload['pdf'] : []));
-        $chatToolPdfMode = $this->resolveChatToolPdfMode($message, $tool);
-        $adjuntoAction = $adjunto !== [] ? ($chatToolPdfMode === 'document' ? 'document' : 'analysis') : 'chat';
+        $declaredAdjuntoAction = strtolower(trim((string) ($payload['adjunto_action'] ?? $payload['action'] ?? '')));
         $requestContext = is_array($payload['context'] ?? null) ? $payload['context'] : [];
         $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
         $history = is_array($payload['history'] ?? null) ? $payload['history'] : [];
@@ -71,30 +400,37 @@ final class ChatToolPdfController
         $conversationId = $this->resolveConversationId($conversationId);
 
         if ($adjunto !== []) {
-            $adjuntoTexto = $this->extractAdjuntoPreview(
+            $adjuntoTexto = $this->attachmentPreviewExtractor->extractPreview(
                 (string) ($adjunto['content_base64'] ?? ''),
                 (string) ($adjunto['mime_type'] ?? ''),
                 (string) ($adjunto['name'] ?? '')
             );
+            $adjuntoVision = $this->extractFirstPageImageBase64($adjunto);
             $requestContext['adjunto'] = [
                 'has_attachment' => true,
-                'action' => $adjuntoAction,
+                'action' => $declaredAdjuntoAction,
+                'declared_action' => $declaredAdjuntoAction,
                 'name' => (string) ($adjunto['name'] ?? ''),
                 'mime_type' => (string) ($adjunto['mime_type'] ?? ''),
                 'size' => (int) ($adjunto['size'] ?? 0),
                 'text_preview' => $adjuntoTexto['text_preview'],
                 'text_truncated' => $adjuntoTexto['text_truncated'],
                 'extraction_status' => $adjuntoTexto['status'],
+                'first_page_image_available' => $adjuntoVision !== null,
             ];
             $metadata['adjunto'] = [
                 'has_attachment' => true,
-                'action' => $adjuntoAction,
+                'action' => $declaredAdjuntoAction,
+                'declared_action' => $declaredAdjuntoAction,
                 'name' => (string) ($adjunto['name'] ?? ''),
                 'mime_type' => (string) ($adjunto['mime_type'] ?? ''),
                 'size' => (int) ($adjunto['size'] ?? 0),
                 'text_length' => $adjuntoTexto['text_length'],
                 'text_truncated' => $adjuntoTexto['text_truncated'],
                 'extraction_status' => $adjuntoTexto['status'],
+                'first_page_image_available' => $adjuntoVision !== null,
+                'first_page_image_base64' => $adjuntoVision,
+                'first_page_image_mime_type' => $adjuntoVision !== null ? 'image/jpeg' : '',
             ];
         }
 
@@ -119,35 +455,20 @@ final class ChatToolPdfController
         }
 
         try {
-            if ($chatToolPdfMode === 'document') {
-                $aiResponse = $this->generationService->generateDocument(
-                    message: $message,
-                    tenant: $tenant,
-                    usuario: $usuario,
-                    entorno: $this->chattoolpdfEnvironment,
-                    locale: $locale,
-                    history: $history,
-                    context: [
-                        ...$requestContext,
-                        'client_key' => $clientKey,
-                        'metadata' => $metadata,
-                    ]
-                );
-            } else {
-                $aiResponse = $this->generationService->answerQuestion(
-                    message: $message,
-                    tenant: $tenant,
-                    usuario: $usuario,
-                    entorno: $this->chattoolpdfEnvironment,
-                    locale: $locale,
-                    history: $history,
-                    context: [
-                        ...$requestContext,
-                        'client_key' => $clientKey,
-                        'metadata' => $metadata,
-                    ]
-                );
-            }
+            $aiResponse = $this->generationService->processRequest(
+                message: $message,
+                tenant: $tenant,
+                usuario: $usuario,
+                entorno: $this->chattoolpdfEnvironment,
+                locale: $locale,
+                tool: $tool,
+                history: $history,
+                context: [
+                    ...$requestContext,
+                    'client_key' => $clientKey,
+                    'metadata' => $metadata,
+                ]
+            );
         } catch (RuntimeException $exception) {
             $this->logger->error('No fue posible procesar chattoolpdf.', [
                 'exception' => $exception,
@@ -176,13 +497,6 @@ final class ChatToolPdfController
             ], JsonResponse::HTTP_BAD_GATEWAY);
         }
 
-        if ($tool === false) {
-            return new JsonResponse([
-                'status' => 'success',
-                'message' => (string) ($aiResponse['message'] ?? ''),
-            ]);
-        }
-
         if (($aiResponse['status'] ?? '') === 'needs_clarification') {
             $assistantMessage = trim((string) ($aiResponse['message'] ?? ''));
             $missingFields = is_array($aiResponse['missing_fields'] ?? null) ? array_values(array_map('strval', $aiResponse['missing_fields'])) : [];
@@ -191,6 +505,13 @@ final class ChatToolPdfController
                 'status' => 'pending',
                 'message' => $assistantMessage,
                 'missing_fields' => $missingFields,
+            ]);
+        }
+
+        if (($aiResponse['mode'] ?? 'chat') === 'chat') {
+            return new JsonResponse([
+                'status' => 'success',
+                'message' => (string) ($aiResponse['message'] ?? ''),
             ]);
         }
 
@@ -315,224 +636,6 @@ final class ChatToolPdfController
         return str_replace('_', '-', $normalized);
     }
 
-    private function resolveChatToolPdfMode(string $message, bool $tool): string
-    {
-        $normalized = strtolower(trim($message));
-        $hasDocumentIntent = $this->containsAny($normalized, [
-            'crea',
-            'creame',
-            'crear',
-            'crea un pdf',
-            'genera',
-            'generar',
-            'genera un pdf',
-            'mejora',
-            'mejorar',
-            'edita',
-            'editar',
-            'basado en',
-            'basandote',
-            'basándote',
-            'convierte',
-            'transforma',
-            'formatea',
-            'construye',
-            'construir',
-            'haz un pdf',
-            'hacer un pdf',
-        ]);
-
-        if ($tool && $hasDocumentIntent) {
-            return 'document';
-        }
-
-        return 'chat';
-    }
-
-    /**
-     * @param array<int, string> $needles
-     */
-    private function containsAny(string $haystack, array $needles): bool
-    {
-        foreach ($needles as $needle) {
-            if ($needle !== '' && str_contains($haystack, $needle)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
-     */
-    private function extractAdjuntoPreview(string $contentBase64, string $mimeType, string $fileName): array
-    {
-        $contentBase64 = trim($contentBase64);
-        if ($contentBase64 === '') {
-            return [
-                'status' => 'missing',
-                'text_preview' => '',
-                'text_length' => 0,
-                'text_truncated' => false,
-            ];
-        }
-
-        $normalizedMimeType = strtolower(trim($mimeType));
-        $normalizedFileName = strtolower(trim($fileName));
-        $binary = base64_decode($contentBase64, true);
-        if ($binary === false || $binary === '') {
-            return [
-                'status' => 'invalid_base64',
-                'text_preview' => '',
-                'text_length' => 0,
-                'text_truncated' => false,
-            ];
-        }
-
-        if ($this->isTextLikeAttachment($normalizedMimeType, $normalizedFileName)) {
-            $text = trim((string) $binary);
-            return $this->normalizePreviewText($text, 'ok');
-        }
-
-        if ($this->isPdfAttachment($normalizedMimeType, $normalizedFileName)) {
-            return $this->extractPdfPreviewFromBinary($binary);
-        }
-
-        return [
-            'status' => 'unsupported_binary',
-            'text_preview' => '',
-            'text_length' => 0,
-            'text_truncated' => false,
-        ];
-    }
-
-    /**
-     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
-     */
-    private function extractPdfPreviewFromBinary(string $binary): array
-    {
-        if (!function_exists('exec')) {
-            return [
-                'status' => 'execution_unavailable',
-                'text_preview' => '',
-                'text_length' => 0,
-                'text_truncated' => false,
-            ];
-        }
-
-        $tempPdf = tempnam(sys_get_temp_dir(), 'chattoolpdf_');
-        if ($tempPdf === false) {
-            return [
-                'status' => 'tempfile_error',
-                'text_preview' => '',
-                'text_length' => 0,
-                'text_truncated' => false,
-            ];
-        }
-
-        $tempTxt = $tempPdf . '.txt';
-        $exitCode = 1;
-        $output = [];
-        $text = '';
-
-        try {
-            if (file_put_contents($tempPdf, $binary) === false) {
-                return [
-                    'status' => 'write_error',
-                    'text_preview' => '',
-                    'text_length' => 0,
-                    'text_truncated' => false,
-                ];
-            }
-
-            $command = sprintf(
-                'pdftotext -layout %s %s 2>/dev/null',
-                escapeshellarg($tempPdf),
-                escapeshellarg($tempTxt)
-            );
-            exec($command, $output, $exitCode);
-
-            if ($exitCode === 0 && is_file($tempTxt)) {
-                $text = trim((string) file_get_contents($tempTxt));
-            }
-        } finally {
-            if (is_file($tempTxt)) {
-                @unlink($tempTxt);
-            }
-            if (is_file($tempPdf)) {
-                @unlink($tempPdf);
-            }
-        }
-
-        if ($text === '') {
-            return [
-                'status' => 'empty',
-                'text_preview' => '',
-                'text_length' => 0,
-                'text_truncated' => false,
-            ];
-        }
-
-        return $this->normalizePreviewText($text, 'ok');
-    }
-
-    /**
-     * @return array{status:string,text_preview:string,text_length:int,text_truncated:bool}
-     */
-    private function normalizePreviewText(string $text, string $status): array
-    {
-        $normalized = preg_replace("/[ \t]+/", ' ', $text) ?? $text;
-        $normalized = preg_replace("/\R{3,}/", "\n\n", $normalized) ?? $normalized;
-        $normalized = trim($normalized);
-
-        $maxLength = 12000;
-        $textLength = function_exists('mb_strlen') ? mb_strlen($normalized) : strlen($normalized);
-        $preview = $normalized;
-        $truncated = false;
-
-        if ($textLength > $maxLength) {
-            $preview = function_exists('mb_substr')
-                ? mb_substr($normalized, 0, $maxLength)
-                : substr($normalized, 0, $maxLength);
-            $preview = rtrim($preview) . "\n\n[contenido truncado]";
-            $truncated = true;
-        }
-
-        return [
-            'status' => $status,
-            'text_preview' => $preview,
-            'text_length' => $textLength,
-            'text_truncated' => $truncated,
-        ];
-    }
-
-    private function isTextLikeAttachment(string $mimeType, string $fileName): bool
-    {
-        if ($mimeType !== '' && str_starts_with($mimeType, 'text/')) {
-            return true;
-        }
-
-        if (in_array($mimeType, [
-            'application/json',
-            'application/xml',
-            'application/xhtml+xml',
-            'application/csv',
-            'application/yaml',
-            'application/x-yaml',
-            'application/javascript',
-        ], true)) {
-            return true;
-        }
-
-        return (bool) preg_match('/\.(txt|csv|json|xml|md|markdown|yml|yaml|html?|twig|log|ini|conf|sql|js|ts|css|scss|less|php|py|rb|go|sh|bat|ps1)$/', $fileName);
-    }
-
-    private function isPdfAttachment(string $mimeType, string $fileName): bool
-    {
-        return $mimeType === 'application/pdf' || str_ends_with($fileName, '.pdf');
-    }
-
     private function normalizeBool(mixed $value): bool
     {
         if (is_bool($value)) {
@@ -546,5 +649,46 @@ final class ChatToolPdfController
         $normalized = strtolower(trim((string) $value));
 
         return in_array($normalized, ['1', 'true', 'yes', 'on', 'si', 'sí'], true);
+    }
+
+    /**
+     * @param array<string, mixed> $adjunto
+     */
+    private function extractFirstPageImageBase64(array $adjunto): ?string
+    {
+        $mimeType = strtolower(trim((string) ($adjunto['mime_type'] ?? '')));
+        if ($mimeType !== 'application/pdf') {
+            return null;
+        }
+
+        $contentBase64 = trim((string) ($adjunto['content_base64'] ?? ''));
+        if ($contentBase64 === '') {
+            return null;
+        }
+
+        $binary = base64_decode($contentBase64, true);
+        if ($binary === false || $binary === '') {
+            return null;
+        }
+
+        $pdfPath = tempnam(sys_get_temp_dir(), 'adjunto_pdf_');
+        if ($pdfPath === false) {
+            return null;
+        }
+
+        try {
+            if (file_put_contents($pdfPath, $binary) === false) {
+                return null;
+            }
+
+            return $this->pdfVisionExtractor->extractFirstPageAsBase64($pdfPath);
+        } finally {
+            @unlink($pdfPath);
+        }
+    }
+
+    private function escapeHtml(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 }

@@ -11,19 +11,20 @@
 # - client_key: optional, useful for tracing
 # - history: optional array of previous messages
 # - context: optional extra context for the model
+# - service-pdf owns PDF rendering defaults and Gotenberg options
 # - metadata: optional tracing/debug data
 #
 # Attachment fields:
 # - adjunto, archivo, or pdf: any of these can carry the attachment object
 # - content_base64: required when you want the backend to extract text from the file
 # - mime_type and name help the backend detect the file type
-# - adjunto_action is optional; the backend currently infers the mode from tool + message intent
+# - adjunto_action is optional; it is only sent as context because the model decides the final mode
 #
 # Backend behavior:
 # - tool=false -> conversational answer only, no PDF generation
-# - tool=true -> PDF generation is allowed, but only if the message expresses a document-generation intent
+# - tool=true -> PDF generation is allowed when the message asks for it
 # - tool=false and attachment -> attachment is treated as context for analysis/chat
-# - tool=true and attachment -> attachment is treated as context for document generation only when the message asks for it
+# - tool=true and attachment -> attachment is treated as context for document generation or improvement
 
 ###
 # 1) Modo pregunta, sin adjunto
@@ -63,6 +64,15 @@ Accept: application/json
   "locale": "es",
   "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f81",
   "client_key": "cliente-demo",
+  "context": {
+    "adjunto": {
+      "has_attachment": true,
+      "name": "resumen.txt",
+      "mime_type": "text/plain",
+      "size": 30,
+      "action": "analysis"
+    }
+  },
   "adjunto": {
     "name": "resumen.txt",
     "mime_type": "text/plain",
@@ -79,7 +89,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  "message": "Genera una cotizacion formal para un servicio de consultoria estrategica para Demo SAS.",
+  "message": "Actúa como un experto diseñador UI/UX y desarrollador frontend. Genera el código HTML y CSS completo para una cotización comercial de alto nivel para un servicio de Consultoría Estratégica emitido por la empresa Demo SAS. Debes cumplir estrictamente las siguientes reglas de diseño y contenido: Diseño y Estilos (CSS): Incluye una etiqueta <style> con un diseño corporativo moderno, limpio y premium. Usa una paleta de colores basada en azules oscuros y grises pizarra. Añade efectos visuales usando box-shadow para darle profundidad a los contenedores, bordes redondeados (border-radius), y asegúrate de usar una tipografía sans-serif limpia (como Helvetica, Arial o system-ui). Cabecera y Logo: Diseña un encabezado profesional. Obligatorio: El logo de Demo SAS DEBE ser un icono SVG incrustado directamente en el código HTML. Bajo ninguna circunstancia uses etiquetas <img> con URLs externas o ficticias. Datos y Tabla: Genera una tabla de cotización impecable con cabeceras estilizadas (fondo oscuro, texto claro). Inventa al menos 10 elementos/servicios de consultoría estratégica realistas (ej. Análisis de mercado, Auditoría de procesos, etc.) con sus respectivos costos aleatorios. Totales: Al final de la tabla, incluye una sección de resumen financiero alineada a la derecha que muestre el Subtotal, el IVA (19%) y el Total final calculado correctamente. Estructura: Agrega una sección de Términos y Condiciones en el pie de página con letra pequeña y color gris tenue.",
   "tool": true,
   "tenant": "tenant-demo",
   "usuario": "usuario-demo",
@@ -103,7 +113,15 @@ Accept: application/json
   "locale": "es",
   "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f83",
   "client_key": "cliente-demo",
-  "adjunto_action": "document",
+  "context": {
+    "adjunto": {
+      "has_attachment": true,
+      "name": "propuesta.txt",
+      "mime_type": "text/plain",
+      "size": 44,
+      "action": "document"
+    }
+  },
   "adjunto": {
     "name": "propuesta.txt",
     "mime_type": "text/plain",
@@ -114,8 +132,8 @@ Accept: application/json
 
 ###
 # Notes
-# - If adjunto_action is omitted, the backend infers it.
-# - If you send a PDF, the backend tries to extract text with pdftotext.
+# - If you send a PDF, the backend tries pdftotext first and then OCR fallback.
+# - service-pdf applies the rendering profile internally.
 # - For binary files, replace content_base64 with the real file content encoded in base64.
 
 ###
@@ -138,7 +156,15 @@ Accept: application/json
 #   "locale": "es",
 #   "conversation_id": "f1a2b3c4d5e6f708192a3b4c5d6e7f84",
 #   "client_key": "cliente-demo",
-#   "adjunto_action": "analysis",
+#   "context": {
+#     "adjunto": {
+#       "has_attachment": true,
+#       "name": "c5f9c23436266d0e3f3a8a283304d062065705dc213b2df8001de720409aecb0.pdf",
+#       "mime_type": "application/pdf",
+#       "size": 605184,
+#       "action": "analysis"
+#     }
+#   },
 #   "adjunto": {
 #     "name": "c5f9c23436266d0e3f3a8a283304d062065705dc213b2df8001de720409aecb0.pdf",
 #     "mime_type": "application/pdf",

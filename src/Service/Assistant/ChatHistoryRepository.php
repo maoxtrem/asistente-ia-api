@@ -4,44 +4,41 @@ declare(strict_types=1);
 
 namespace App\Service\Assistant;
 
+use App\Entity\ChatConversation;
+use App\Entity\ChatFeedback;
+use App\Entity\ChatKnowledgeCandidate;
+use App\Entity\ChatMessage;
 use DateTimeImmutable;
-use PDO;
-use PDOException;
+use Doctrine\ORM\EntityManagerInterface;
 use RuntimeException;
 
 final class ChatHistoryRepository
 {
     private const CONVERSATION_ID_LENGTH = 32;
 
-    private PDO $pdo;
-
     public function __construct(
-        private readonly string $databaseUrl,
+        private readonly EntityManagerInterface $entityManager,
     ) {
-        $this->pdo = $this->createPdo($databaseUrl);
     }
 
     public function ensureConversation(string $conversationId, string $tenant): void
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-
         $now = $this->utcNow();
-        $sql = <<<'SQL'
-INSERT INTO chat_conversations (id, tenant, created_at, updated_at, last_message_at)
-VALUES (:id, :tenant, :created_at, :updated_at, :last_message_at)
-ON DUPLICATE KEY UPDATE
-    tenant = VALUES(tenant),
-    updated_at = VALUES(updated_at)
-SQL;
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':id' => $conversationId,
-            ':tenant' => $tenant,
-            ':created_at' => $now,
-            ':updated_at' => $now,
-            ':last_message_at' => $now,
-        ]);
+        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
+
+        if (!$conversation instanceof ChatConversation) {
+            $conversation = new ChatConversation($conversationId, $tenant, $now);
+            $this->entityManager->persist($conversation);
+            $this->entityManager->flush();
+
+            return;
+        }
+
+        $conversation->setTenant($tenant);
+        $conversation->touch($now);
+        $this->entityManager->flush();
     }
 
     /**
@@ -50,24 +47,27 @@ SQL;
     public function appendMessage(string $conversationId, string $tenant, string $role, string $content, array $metadata = []): void
     {
         $conversationId = $this->normalizeConversationId($conversationId);
-
         $now = $this->utcNow();
-        $sql = <<<'SQL'
-INSERT INTO chat_messages (conversation_id, tenant, role, content, metadata, created_at)
-VALUES (:conversation_id, :tenant, :role, :content, :metadata, :created_at)
-SQL;
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':conversation_id' => $conversationId,
-            ':tenant' => $tenant,
-            ':role' => $role,
-            ':content' => $content,
-            ':metadata' => $metadata !== [] ? json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
-            ':created_at' => $now,
-        ]);
+        $this->ensureConversation($conversationId, $tenant);
 
-        $this->touchConversation($conversationId, $tenant, $now);
+        $message = new ChatMessage(
+            conversationId: $conversationId,
+            tenant: $tenant,
+            role: $role,
+            content: $content,
+            metadata: $metadata,
+            createdAt: $now
+        );
+
+        $this->entityManager->persist($message);
+
+        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
+        if ($conversation instanceof ChatConversation) {
+            $conversation->touch($now);
+        }
+
+        $this->entityManager->flush();
     }
 
     /**
@@ -76,23 +76,20 @@ SQL;
     public function appendFeedback(string $conversationId, string $tenant, bool $helpful, string $question, string $answer, array $metadata = []): void
     {
         $conversationId = $this->normalizeConversationId($conversationId, false);
-
         $now = $this->utcNow();
-        $sql = <<<'SQL'
-INSERT INTO chat_feedback (conversation_id, tenant, helpful, question, answer, metadata, created_at)
-VALUES (:conversation_id, :tenant, :helpful, :question, :answer, :metadata, :created_at)
-SQL;
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':conversation_id' => $conversationId,
-            ':tenant' => $tenant,
-            ':helpful' => $helpful ? 1 : 0,
-            ':question' => $question,
-            ':answer' => $answer,
-            ':metadata' => $metadata !== [] ? json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
-            ':created_at' => $now,
-        ]);
+        $feedback = new ChatFeedback(
+            conversationId: $conversationId,
+            tenant: $tenant,
+            helpful: $helpful,
+            question: $question,
+            answer: $answer,
+            metadata: $metadata,
+            createdAt: $now
+        );
+
+        $this->entityManager->persist($feedback);
+        $this->entityManager->flush();
     }
 
     /**
@@ -112,64 +109,54 @@ SQL;
     ): void {
         $conversationId = $this->normalizeConversationId($conversationId, false);
         $candidateKey = trim($candidateKey);
+
         if ($candidateKey === '') {
             throw new RuntimeException('El identificador del candidato no puede estar vacio.');
         }
 
         $now = $this->utcNow();
-        $sql = <<<'SQL'
-INSERT INTO chat_knowledge_candidates (
-    candidate_key, conversation_id, tenant, helpful, question, answer, status, title, summary, content, language, confidence,
-    should_index, duplicate_of, analysis, metadata, created_at, updated_at, indexed_at, indexed_point_id
-)
-VALUES (
-    :candidate_key, :conversation_id, :tenant, :helpful, :question, :answer, :status, :title, :summary, :content, :language, :confidence,
-    :should_index, :duplicate_of, :analysis, :metadata, :created_at, :updated_at, :indexed_at, :indexed_point_id
-)
-ON DUPLICATE KEY UPDATE
-    conversation_id = VALUES(conversation_id),
-    tenant = VALUES(tenant),
-    helpful = VALUES(helpful),
-    question = VALUES(question),
-    answer = VALUES(answer),
-    status = VALUES(status),
-    title = VALUES(title),
-    summary = VALUES(summary),
-    content = VALUES(content),
-    language = VALUES(language),
-    confidence = VALUES(confidence),
-    should_index = VALUES(should_index),
-    duplicate_of = VALUES(duplicate_of),
-    analysis = VALUES(analysis),
-    metadata = VALUES(metadata),
-    updated_at = VALUES(updated_at),
-    indexed_at = VALUES(indexed_at),
-    indexed_point_id = VALUES(indexed_point_id)
-SQL;
+        $indexedAt = $this->normalizeDateTimeValue($analysis['indexed_at'] ?? null);
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':candidate_key' => $candidateKey,
-            ':conversation_id' => $conversationId,
-            ':tenant' => $tenant,
-            ':helpful' => $helpful ? 1 : 0,
-            ':question' => $question,
-            ':answer' => $answer,
-            ':status' => $status,
-            ':title' => trim((string) ($analysis['title'] ?? '')),
-            ':summary' => trim((string) ($analysis['summary'] ?? '')),
-            ':content' => trim((string) ($analysis['content'] ?? '')),
-            ':language' => trim((string) ($analysis['language'] ?? '')),
-            ':confidence' => isset($analysis['confidence']) ? (float) $analysis['confidence'] : null,
-            ':should_index' => isset($analysis['should_index']) ? ((bool) $analysis['should_index'] ? 1 : 0) : null,
-            ':duplicate_of' => isset($analysis['duplicate_of']) ? trim((string) $analysis['duplicate_of']) : null,
-            ':analysis' => $analysis !== [] ? json_encode($analysis, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
-            ':metadata' => $metadata !== [] ? json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
-            ':created_at' => $now,
-            ':updated_at' => $now,
-            ':indexed_at' => $this->normalizeDateTimeValue($analysis['indexed_at'] ?? null),
-            ':indexed_point_id' => isset($analysis['indexed_point_id']) ? trim((string) $analysis['indexed_point_id']) : null,
+        /** @var ChatKnowledgeCandidate|null $candidate */
+        $candidate = $this->entityManager->getRepository(ChatKnowledgeCandidate::class)->findOneBy([
+            'candidateKey' => $candidateKey,
         ]);
+
+        if (!$candidate instanceof ChatKnowledgeCandidate) {
+            $candidate = new ChatKnowledgeCandidate(
+                candidateKey: $candidateKey,
+                conversationId: $conversationId,
+                tenant: $tenant,
+                helpful: $helpful,
+                question: $question,
+                answer: $answer,
+                status: $status,
+                createdAt: $now,
+                updatedAt: $now
+            );
+        }
+
+        $candidate->setConversationId($conversationId);
+        $candidate->setTenant($tenant);
+        $candidate->setHelpful($helpful);
+        $candidate->setQuestion($question);
+        $candidate->setAnswer($answer);
+        $candidate->setStatus($status);
+        $candidate->setTitle(trim((string) ($analysis['title'] ?? '')) ?: null);
+        $candidate->setSummary(trim((string) ($analysis['summary'] ?? '')) ?: null);
+        $candidate->setContent(trim((string) ($analysis['content'] ?? '')) ?: null);
+        $candidate->setLanguage(trim((string) ($analysis['language'] ?? '')) ?: null);
+        $candidate->setConfidence(isset($analysis['confidence']) ? (string) $analysis['confidence'] : null);
+        $candidate->setShouldIndex(isset($analysis['should_index']) ? (bool) $analysis['should_index'] : null);
+        $candidate->setDuplicateOf(isset($analysis['duplicate_of']) ? trim((string) $analysis['duplicate_of']) : null);
+        $candidate->setAnalysis($analysis);
+        $candidate->setMetadata($metadata);
+        $candidate->setUpdatedAt($now);
+        $candidate->setIndexedAt($indexedAt);
+        $candidate->setIndexedPointId(isset($analysis['indexed_point_id']) ? trim((string) $analysis['indexed_point_id']) : null);
+
+        $this->entityManager->persist($candidate);
+        $this->entityManager->flush();
     }
 
     /**
@@ -179,37 +166,26 @@ SQL;
     {
         $conversationId = $this->normalizeConversationId($conversationId);
 
-        $sql = <<<'SQL'
-SELECT role, content, metadata, created_at
-FROM chat_messages
-WHERE conversation_id = :conversation_id AND tenant = :tenant
-ORDER BY id DESC
-LIMIT :limit
-SQL;
+        $rows = $this->entityManager->createQueryBuilder()
+            ->select('message')
+            ->from(ChatMessage::class, 'message')
+            ->where('message.conversationId = :conversationId')
+            ->andWhere('message.tenant = :tenant')
+            ->setParameter('conversationId', $conversationId)
+            ->setParameter('tenant', $tenant)
+            ->orderBy('message.id', 'DESC')
+            ->setMaxResults(max(1, $limit))
+            ->getQuery()
+            ->getResult();
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':conversation_id', $conversationId, PDO::PARAM_STR);
-        $stmt->bindValue(':tenant', $tenant, PDO::PARAM_STR);
-        $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
-        $stmt->execute();
-
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $rows = array_reverse($rows);
 
-        return array_map(static function (array $row): array {
-            $metadata = [];
-            if (isset($row['metadata']) && is_string($row['metadata']) && trim($row['metadata']) !== '') {
-                $decoded = json_decode($row['metadata'], true);
-                if (is_array($decoded)) {
-                    $metadata = $decoded;
-                }
-            }
-
+        return array_map(static function (ChatMessage $message): array {
             return [
-                'role' => (string) ($row['role'] ?? ''),
-                'content' => (string) ($row['content'] ?? ''),
-                'created_at' => (string) ($row['created_at'] ?? ''),
-                'metadata' => $metadata,
+                'role' => $message->getRole(),
+                'content' => $message->getContent(),
+                'created_at' => $message->getCreatedAt()->format(DATE_ATOM),
+                'metadata' => $message->getMetadata(),
             ];
         }, $rows);
     }
@@ -218,13 +194,10 @@ SQL;
     {
         $conversationId = $this->normalizeConversationId($conversationId);
 
-        $stmt = $this->pdo->prepare('SELECT 1 FROM chat_conversations WHERE id = :id AND tenant = :tenant LIMIT 1');
-        $stmt->execute([
-            ':id' => $conversationId,
-            ':tenant' => $tenant,
-        ]);
+        /** @var ChatConversation|null $conversation */
+        $conversation = $this->entityManager->find(ChatConversation::class, $conversationId);
 
-        return (bool) $stmt->fetchColumn();
+        return $conversation instanceof ChatConversation && $conversation->getTenant() === $tenant;
     }
 
     public function conversationIdFromClientKey(string $tenant, string $clientKey): string
@@ -253,61 +226,9 @@ SQL;
         ];
     }
 
-    private function touchConversation(string $conversationId, string $tenant, string $updatedAt): void
+    private function utcNow(): DateTimeImmutable
     {
-        $stmt = $this->pdo->prepare(
-            'UPDATE chat_conversations SET updated_at = :updated_at, last_message_at = :last_message_at WHERE id = :id AND tenant = :tenant'
-        );
-        $stmt->execute([
-            ':id' => $conversationId,
-            ':tenant' => $tenant,
-            ':updated_at' => $updatedAt,
-            ':last_message_at' => $updatedAt,
-        ]);
-    }
-
-    private function createPdo(string $databaseUrl): PDO
-    {
-        $parts = parse_url($databaseUrl);
-        if (!is_array($parts)) {
-            throw new RuntimeException('DATABASE_URL no tiene un formato valido.');
-        }
-
-        $scheme = (string) ($parts['scheme'] ?? '');
-        if (!in_array($scheme, ['mysql', 'mariadb'], true)) {
-            throw new RuntimeException('DATABASE_URL debe usar mysql o mariadb.');
-        }
-
-        $host = (string) ($parts['host'] ?? '127.0.0.1');
-        $port = (string) ($parts['port'] ?? '3306');
-        $path = trim((string) ($parts['path'] ?? ''), '/');
-        $query = [];
-        parse_str((string) ($parts['query'] ?? ''), $query);
-        $charset = (string) ($query['charset'] ?? 'utf8mb4');
-
-        $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=%s', $host, $port, $path, $charset);
-
-        try {
-            $pdo = new PDO(
-                $dsn,
-                isset($parts['user']) ? rawurldecode((string) $parts['user']) : null,
-                isset($parts['pass']) ? rawurldecode((string) $parts['pass']) : null,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false,
-                ]
-            );
-        } catch (PDOException $exception) {
-            throw new RuntimeException(sprintf('No fue posible conectar con la base de datos: %s', $exception->getMessage()), 0, $exception);
-        }
-
-        return $pdo;
-    }
-
-    private function utcNow(): string
-    {
-        return (new DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        return new DateTimeImmutable('now', new \DateTimeZone('UTC'));
     }
 
     private function normalizeConversationId(string $conversationId, bool $strict = true): string
@@ -340,7 +261,7 @@ SQL;
         return strtolower($conversationId);
     }
 
-    private function normalizeDateTimeValue(mixed $value): ?string
+    private function normalizeDateTimeValue(mixed $value): ?DateTimeImmutable
     {
         $normalized = trim((string) ($value ?? ''));
         if ($normalized === '') {
@@ -358,12 +279,12 @@ SQL;
         foreach ($formats as $format) {
             $dateTime = DateTimeImmutable::createFromFormat($format, $normalized);
             if ($dateTime instanceof DateTimeImmutable) {
-                return $dateTime->format('Y-m-d H:i:s');
+                return $dateTime;
             }
         }
 
         try {
-            return (new DateTimeImmutable($normalized))->format('Y-m-d H:i:s');
+            return new DateTimeImmutable($normalized);
         } catch (\Throwable) {
             return null;
         }

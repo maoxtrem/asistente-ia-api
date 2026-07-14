@@ -18,23 +18,19 @@ If the user's question is clearly in Spanish, answer in Spanish.
 If the user's question is clearly in English, answer in English.
 If the question mixes languages, use the dominant language of the question and keep technical terms natural.
 If locale conflicts with the question, prioritize the question language.
+If context.adjunto.has_attachment is true, never ask the user to resend the file; the attachment is already present in context.
 If the context includes an attachment with text_preview, use it as the main source for the answer.
 If the user asks to explain, summarize, review, or analyze the attached PDF, answer from the attachment instead of asking for more context.
 If there is an attachment but no readable text was extracted, say so briefly and explain the limitation instead of inventing content.
 PROMPT;
     }
 
-    /**
-     * @param array<int, array<string, mixed>> $history
-     * @param array<string, mixed> $context
-     */
     public function buildQuestionUserPrompt(
         string $message,
         string $tenant,
         string $usuario,
         string $entorno,
         string $locale,
-        array $history,
         array $context
     ): string {
         return json_encode([
@@ -44,21 +40,8 @@ PROMPT;
             'usuario' => $usuario,
             'entorno' => $entorno,
             'locale' => $locale !== '' ? $locale : 'es',
-            'response_language' => $this->resolveResponseLanguage($locale, $message),
-            'history' => $this->normalizeHistory($history),
+            'response_language' => $this->resolveResponseLanguage($locale),
             'context' => $this->normalizeContext($context),
-            'rules' => [
-                'Answer directly in plain text.',
-                'Do not output JSON.',
-                'Do not mention internal tools unless the user asks.',
-                'Use response_language as the primary language directive.',
-                'If the user writes in Spanish, answer in Spanish.',
-                'If the user writes in English, answer in English.',
-                'If the user mixes Spanish and English, respond in the dominant language of the message.',
-                'If context.adjunto.text_preview is present, base the answer on the attachment.',
-                'If context.adjunto.has_attachment is true and the user asks about the PDF, do not ask what document it is about.',
-                'If context.adjunto.extraction_status indicates no readable text, say that briefly instead of pretending the file was read.',
-            ],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
@@ -76,6 +59,7 @@ Follow the response language specified in the payload when present.
 If the user's question is clearly in Spanish, write the JSON message and any clarifying question in Spanish.
 If the user's question is clearly in English, write them in English.
 If the question mixes both languages, use the dominant language of the request.
+If context.adjunto.has_attachment is true, never ask the user to send the file again; the attachment is already present in context.
 If the context indicates adjunto.action = analysis, treat the attachment as the source for explanation or summarization.
 If the context indicates adjunto.action = document, use the attachment as the base to create or improve a document.
 If the context includes an attachment with text_preview, use it as the main content source for interpreting the document.
@@ -92,6 +76,10 @@ Rules:
 - If the user asks for test, random, demo, example, mock, or sample quote values, treat it as sufficient input.
 - In that case, you may generate coherent numeric example values without asking for clarification, and the message must make clear that the data is for demonstration.
 - When status is "ready", html must contain a full HTML template or a well-formed HTML fragment.
+- When status is "ready" and you generate a full HTML document, include this exact meta tag inside the head: <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+- When status is "ready", prefer body { font-family: 'DejaVu Sans', sans-serif; } for PDF-safe typography unless the user explicitly requests a different font.
+- When status is "ready", put the CSS inside a <style> tag in the same HTML document; do not depend on external stylesheets for PDF rendering.
+- When status is "ready", include PDF-friendly CSS for layout, tables, spacing, typography, and page breaks.
 - The HTML template may use Twig syntax and must match the keys in the JSON object.
 - json must contain only the data needed to render the html.
 - Do not invent sensitive data.
@@ -130,17 +118,12 @@ Example:
 PROMPT;
     }
 
-    /**
-     * @param array<int, array<string, mixed>> $history
-     * @param array<string, mixed> $context
-     */
     public function buildPdfUserPrompt(
         string $message,
         string $tenant,
         string $usuario,
         string $entorno,
         string $locale,
-        array $history,
         array $context
     ): string {
         return json_encode([
@@ -150,8 +133,7 @@ PROMPT;
             'usuario' => $usuario,
             'entorno' => $entorno,
             'locale' => $locale !== '' ? $locale : 'es',
-            'response_language' => $this->resolveResponseLanguage($locale, $message),
-            'history' => $this->normalizeHistory($history),
+            'response_language' => $this->resolveResponseLanguage($locale),
             'context' => $this->normalizeContext($context),
             'output_schema' => [
                 'status' => 'ready',
@@ -159,30 +141,88 @@ PROMPT;
                 'missing_fields' => [],
                 'paper_size' => 'A4',
                 'orientation' => 'portrait',
-                'html' => '<!doctype html><html><body>...</body></html>',
+                'html' => '<!doctype html><html><body>{{titulo}}</body></html>',
                 'json' => [
                     'titulo' => '...',
                 ],
             ],
-            'rules' => [
-                'Return only one JSON object.',
-                'Use the user question as the primary source of truth.',
-                'Extract concrete values from the message and reflect them in json.',
-                'Follow the styling instructions from the message if they exist.',
-                'Include a real visual brand mark when the document is corporate.',
-                'Make the message describe the generated document, not the service-pdf transport.',
-                'Do not invent taxes or numeric values that are not in the message.',
-                'Keep json keys aligned with the html placeholders.',
-                'If the request includes styling hints, include them in the html.',
-                'If more information is needed, ask one concise question.',
-                'Use response_language as the primary language directive.',
-                'If the user writes in Spanish, answer in Spanish.',
-                'If the user writes in English, answer in English.',
-                'If the user mixes Spanish and English, respond in the dominant language of the message.',
-                'If context.adjunto.text_preview is present, use it as the source for the explanation or summary.',
-                'If context.adjunto.has_attachment is true and the message asks about the attached PDF, do not respond with a generic request for more context.',
-                'If the attachment has no readable extracted text, explain that briefly and do not invent content.',
-            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+    }
+
+    public function buildUnifiedSystemPrompt(): string
+    {
+        return <<<'PROMPT'
+You are the decision engine for a chat-and-PDF workflow.
+You receive the full request payload and must decide the final mode yourself.
+Return valid JSON only, without markdown, code blocks, or extra text.
+
+Decisions:
+- mode = "chat" when the user wants a normal answer, explanation, summary, or clarification.
+- mode = "document" when the user clearly wants a PDF or document to be created, improved, transformed, or formatted.
+- status = "needs_clarification" when critical information is missing.
+
+Important rules:
+- If tool is false, choose mode = "chat" even if the user mentions a PDF.
+- If tool is true, choose mode = "document" only when the message clearly asks for a document or PDF output.
+- If the message asks to explain, summarize, review, analyze, or interpret an attachment, choose mode = "chat" and answer from the attachment.
+- If the message asks to create, convert, improve, redesign, or generate a document from an attachment, choose mode = "document".
+- If context.adjunto.has_attachment is true, never ask the user to resend the file; the attachment is already present in context.
+- Follow the response language specified in the payload when present.
+- If the user's question is clearly in Spanish, answer in Spanish.
+- If the user's question is clearly in English, answer in English.
+- If the question mixes both languages, use the dominant language of the request.
+- If the attachment has readable text, use it as context.
+- If the attachment has no readable text, say that briefly instead of inventing content.
+- If mode is document, html is mandatory and must never be empty.
+- If you cannot produce html, return status = "needs_clarification" instead of mode = "document".
+
+Output must match this schema:
+{
+  "status": "ready|needs_clarification",
+  "mode": "chat|document",
+  "message": "brief text",
+  "missing_fields": [],
+  "paper_size": "A4",
+  "orientation": "portrait",
+  "html": "STRING: HTML5 template when mode=document; empty string only when mode=chat",
+  "json": "OBJECT: data needed to render the HTML; empty object only when mode=chat"
+}
+
+Minimal valid example for mode = "document":
+{
+  "status": "ready",
+  "mode": "document",
+  "message": "Documento generado correctamente.",
+  "missing_fields": [],
+  "paper_size": "A4",
+  "orientation": "portrait",
+  "html": "<!doctype html><html><body><h1>Documento</h1></body></html>",
+  "json": {
+    "titulo": "Documento"
+  }
+}
+PROMPT;
+    }
+
+    public function buildUnifiedUserPrompt(
+        string $message,
+        string $tenant,
+        string $usuario,
+        string $entorno,
+        string $locale,
+        bool $tool,
+        array $context
+    ): string {
+        return json_encode([
+            'task' => 'resolve_chattoolpdf_request',
+            'message' => $message,
+            'tenant' => $tenant,
+            'usuario' => $usuario,
+            'entorno' => $entorno,
+            'locale' => $locale !== '' ? $locale : 'es',
+            'response_language' => $this->resolveResponseLanguage($locale),
+            'tool' => $tool,
+            'context' => $this->normalizeContext($context),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
@@ -220,80 +260,13 @@ PROMPT;
             'text_preview' => trim((string) ($adjunto['text_preview'] ?? '')),
             'text_truncated' => (bool) ($adjunto['text_truncated'] ?? false),
             'extraction_status' => trim((string) ($adjunto['extraction_status'] ?? '')),
+            'first_page_image_available' => (bool) ($adjunto['first_page_image_available'] ?? false),
         ];
     }
 
-    /**
-     * @param array<int, array<string, mixed>> $history
-     * @return array<int, array<string, string>>
-     */
-    private function normalizeHistory(array $history): array
+    private function resolveResponseLanguage(string $locale): string
     {
-        return array_values(array_map(static function (array $item): array {
-            return [
-                'role' => (string) ($item['role'] ?? ''),
-                'content' => (string) ($item['content'] ?? ''),
-            ];
-        }, array_slice($history, -6)));
-    }
-
-    private function resolveResponseLanguage(string $locale, string $message): string
-    {
-        $normalizedMessage = strtolower(trim($message));
         $normalizedLocale = strtolower(trim(str_replace('_', '-', $locale)));
-
-        $spanishSignals = [
-            '¿',
-            '¡',
-            ' qué ',
-            ' como ',
-            ' cómo ',
-            'explicame',
-            'explícame',
-            ' explica',
-            'explica',
-            ' resumen',
-            'resumeme',
-            'resúmeme',
-            ' revisa',
-            'revisar',
-            'analiza',
-            ' adjunto',
-            ' documento',
-            ' todo',
-            'pdf',
-        ];
-        $englishSignals = [
-            ' what ',
-            ' how ',
-            ' explain',
-            ' summary',
-            ' review',
-            ' attachment',
-            ' document',
-        ];
-
-        $spanishScore = 0;
-        foreach ($spanishSignals as $signal) {
-            if (str_contains($normalizedMessage, $signal)) {
-                $spanishScore++;
-            }
-        }
-
-        $englishScore = 0;
-        foreach ($englishSignals as $signal) {
-            if (str_contains($normalizedMessage, $signal)) {
-                $englishScore++;
-            }
-        }
-
-        if ($spanishScore > $englishScore) {
-            return 'es';
-        }
-
-        if ($englishScore > $spanishScore) {
-            return 'en';
-        }
 
         if ($normalizedLocale !== '') {
             if (str_starts_with($normalizedLocale, 'es')) {
@@ -303,6 +276,8 @@ PROMPT;
             if (str_starts_with($normalizedLocale, 'en')) {
                 return 'en';
             }
+
+            return $normalizedLocale;
         }
 
         return 'auto';

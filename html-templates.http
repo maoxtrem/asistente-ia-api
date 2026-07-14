@@ -1,0 +1,31 @@
+POST https://asistente-ia-api.localhost/api/html-templates
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "Cotizacion base",
+  "html_content": "<!DOCTYPE html><html><body><h1>{{ empresa.nombre }}</h1><p>{{ cliente.nombre }}</p></body></html>",
+  "json_content": {
+    "empresa": {
+      "nombre": "Tech Solutions S.A.S"
+    },
+    "cliente": {
+      "nombre": "Desarrollos y Proyectos LTDA"
+    }
+  }
+}
+
+###
+# Lista todas las plantillas.
+GET https://asistente-ia-api.localhost/api/html-templates
+Accept: application/json
+
+###
+# Renderiza la plantilla en HTML.
+GET https://asistente-ia-api.localhost/api/html-templates/REEMPLAZA_UUID/html
+Accept: text/html
+
+###
+# Devuelve la plantilla cruda en JSON.
+GET https://asistente-ia-api.localhost/api/html-templates/REEMPLAZA_UUID/json
+Accept: application/json

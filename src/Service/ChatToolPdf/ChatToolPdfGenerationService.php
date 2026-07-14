@@ -21,6 +21,115 @@ final class ChatToolPdfGenerationService
      * @param array<string, mixed> $context
      * @return array{
      *   status:string,
+     *   mode:string,
+     *   message:string,
+     *   missing_fields:array<int, string>,
+     *   html:string,
+     *   json:array<string, mixed>,
+     *   paper_size:string,
+     *   orientation:string,
+     *   raw:array<string, mixed>
+     * }
+     */
+    public function processRequest(
+        string $message,
+        string $tenant,
+        string $usuario,
+        string $entorno,
+        string $locale,
+        bool $tool,
+        array $history,
+        array $context = []
+    ): array {
+        $response = $this->chatProvider->chat(
+            message: $message,
+            context: $context,
+            tenant: $tenant,
+            locale: $locale !== '' ? $locale : 'es',
+            history: $history,
+            vectorContext: ['ok' => true, 'skipped' => true, 'matches' => []],
+            qdrantHealth: ['ok' => true, 'skipped' => true],
+            extraInstruction: 'Return one JSON object only.',
+            systemPrompt: $this->promptBuilder->buildUnifiedSystemPrompt(),
+            userPrompt: $this->promptBuilder->buildUnifiedUserPrompt(
+                $message,
+                $tenant,
+                $usuario,
+                $entorno,
+                $locale,
+                $tool,
+                $context
+            )
+        );
+
+        $content = trim((string) ($response['content'] ?? ''));
+        $decoded = $this->extractJson($content);
+
+        if (!is_array($decoded)) {
+            throw new RuntimeException('La IA no devolvio un JSON valido para chattoolpdf.');
+        }
+
+        $status = strtolower(trim((string) ($decoded['status'] ?? 'ready')));
+        $mode = strtolower(trim((string) ($decoded['mode'] ?? 'chat')));
+        $messageText = trim((string) ($decoded['message'] ?? ''));
+        $missingFields = $this->normalizeStringList($decoded['missing_fields'] ?? []);
+        $html = (string) ($decoded['html'] ?? '');
+        $json = is_array($decoded['json'] ?? null) ? $decoded['json'] : [];
+        $paperSize = strtoupper(trim((string) ($decoded['paper_size'] ?? 'A4')));
+        $orientation = strtolower(trim((string) ($decoded['orientation'] ?? 'portrait')));
+
+        if (!in_array($mode, ['chat', 'document'], true)) {
+            throw new RuntimeException('La IA devolvio un mode invalido para chattoolpdf.');
+        }
+
+        if ($status === 'needs_clarification') {
+            return [
+                'status' => 'needs_clarification',
+                'mode' => $mode,
+                'message' => $messageText !== '' ? $messageText : 'Necesito un poco mas de informacion para continuar.',
+                'missing_fields' => $missingFields,
+                'html' => '',
+                'json' => [],
+                'paper_size' => $paperSize !== '' ? $paperSize : 'A4',
+                'orientation' => $orientation !== '' ? $orientation : 'portrait',
+                'raw' => $response,
+            ];
+        }
+
+        if ($messageText === '') {
+            throw new RuntimeException('La IA no devolvio un mensaje util para chattoolpdf.');
+        }
+
+        if ($mode === 'document' && $html === '') {
+            throw new RuntimeException('La IA no devolvio html para generar el PDF.');
+        }
+
+        if ($paperSize === '') {
+            $paperSize = 'A4';
+        }
+
+        if ($orientation === '') {
+            $orientation = 'portrait';
+        }
+
+        return [
+            'status' => 'ready',
+            'mode' => $mode,
+            'message' => $messageText,
+            'missing_fields' => $missingFields,
+            'html' => $html,
+            'json' => $json,
+            'paper_size' => $paperSize,
+            'orientation' => $orientation,
+            'raw' => $response,
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $history
+     * @param array<string, mixed> $context
+     * @return array{
+     *   status:string,
      *   message:string,
      *   raw:array<string, mixed>
      * }
@@ -50,7 +159,6 @@ final class ChatToolPdfGenerationService
                 $usuario,
                 $entorno,
                 $locale,
-                $history,
                 $context
             )
         );
@@ -107,7 +215,6 @@ final class ChatToolPdfGenerationService
                 $usuario,
                 $entorno,
                 $locale,
-                $history,
                 $context
             )
         );
