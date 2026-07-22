@@ -1,0 +1,1 @@
+creame un estimado de una casa de 1500 pies cuadrados, 3 habitaciones sala comedor cocina, garaje, cielos y paredes, solo pintura de la compania 3dc project para mao.
