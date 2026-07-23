@@ -1,22 +1,7 @@
 framework:
     messenger:
-        # Uncomment this (and the failed transport below) to send failed messages to this transport for later handling.
-        # failure_transport: failed
-
         transports:
-            # https://symfony.com/doc/current/messenger.html#transport-configuration
-            async_ia: '%env(MESSENGER_TRANSPORT_DSN)%?stream=async_ia'
-            # failed: 'doctrine://default?queue_name=failed'
-            # sync: 'sync://'
-
-        #routing:
-            # Route your messages to the transports
-            # 'App\Message\YourMessage': async
-            #'*': async_ia
-# when@test:
-#    framework:
-#        messenger:
-#            transports:
-#                # replace with your transport name here (e.g., my_transport: 'in-memory://')
-#                # For more Messenger testing tools, see https://github.com/zenstruck/messenger-test
-#                async: 'in-memory://'
+            async_project_ia: '%env(MESSENGER_TRANSPORT_DSN)%_async_project_ia?stream=async'
+            async_asitente_api_ia: '%env(MESSENGER_TRANSPORT_DSN)%_async_asitente_api_ia?stream=async'
+        routing:
+            'OSP\Message\AsistenteIA\WorkerProjectMessageInterface': async_project_ia

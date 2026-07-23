@@ -3,6 +3,15 @@
     "license": "proprietary",
     "minimum-stability": "stable",
     "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../shared-messages-ia",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
     "require": {
         "php": ">=8.2",
         "ext-ctype": "*",
@@ -12,13 +21,16 @@
         "doctrine/doctrine-migrations-bundle": "3.3.1",
         "doctrine/migrations": "^3.9",
         "doctrine/orm": "^2.20",
+        "onlinesoftwarepro/ia-messages": "*@dev",
         "symfony/console": "7.4.*",
         "symfony/dotenv": "7.4.*",
         "symfony/flex": "^2.11",
         "symfony/framework-bundle": "7.4.*",
         "symfony/http-client": "7.4.*",
         "symfony/messenger": "7.4.*",
+        "symfony/monolog-bundle": "^4.0",
         "symfony/process": "7.4.*",
+        "symfony/redis-messenger": "7.4.*",
         "symfony/runtime": "7.4.*",
         "symfony/yaml": "7.4.*",
         "twig/twig": "^3.28"
