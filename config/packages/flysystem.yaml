@@ -1,0 +1,21 @@
+# Read the documentation at https://github.com/thephpleague/flysystem-bundle/blob/master/docs/1-getting-started.md
+flysystem:
+    storages:
+        default.storage:
+            adapter: 'local'
+            options:
+                directory: '%kernel.project_dir%/var/storage/default'
+        # Tu nuevo almacenamiento en MinIO
+        planos.storage:
+            adapter: 'aws'
+            options:
+                client: 'Aws\S3\S3Client'
+                bucket: '%env(MINIO_BUCKET_NAME)%'
+                prefix: '' # Puedes poner 'entradas' si quieres que todo caiga en una carpeta específica
+
+        planos.storage.images:
+            adapter: 'aws'
+            options:
+                client: 'Aws\S3\S3Client'
+                bucket: '%env(MINIO_BUCKET_NAME_IMAGE)%'
+                prefix: '' # Puedes poner 'entradas' si quieres que todo caiga en una carpeta específica

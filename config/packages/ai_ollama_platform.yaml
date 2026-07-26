@@ -1,0 +1,4 @@
+ai:
+    platform:
+        ollama:
+            endpoint: 'http://host.docker.internal:11434'

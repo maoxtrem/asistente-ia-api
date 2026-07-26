@@ -7,165 +7,208 @@
 # Put parameters here that don't need to change on each machine where the app is deployed
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
-    app.assistant_name: '%env(string:ASSISTANT_NAME)%'
-    app.qdrant_url: '%env(string:QDRANT_URL)%'
-    app.chat_qdrant_collection: '%env(string:QDRANT_CHAT_COLLECTION)%'
-    app.embedding_provider_url: '%env(string:EMBEDDING_PROVIDER_URL)%'
-    app.embedding_model: '%env(string:EMBEDDING_MODEL)%'
-    app.chat_provider_url: '%env(string:CHAT_PROVIDER_URL)%'
-    app.chat_model: '%env(string:CHAT_MODEL)%'
-    app.chat_timeout: '%env(float:CHAT_TIMEOUT)%'
-    app.chat_provider_kind: '%env(string:CHAT_PROVIDER_KIND)%'
-    app.embedding_provider_kind: '%env(string:EMBEDDING_PROVIDER_KIND)%'
-    app.chat_api_key: '%env(string:CHAT_API_KEY)%'
-    app.embedding_api_key: '%env(string:EMBEDDING_API_KEY)%'
-    app.openai_api_key: '%env(string:OPENAI_API_KEY)%'
-    app.openai_image_provider_url: '%env(string:OPENAI_IMAGE_PROVIDER_URL)%'
-    app.openai_image_model: '%env(string:OPENAI_IMAGE_MODEL)%'
-    app.openai_image_size: '%env(string:OPENAI_IMAGE_SIZE)%'
-    app.openai_image_quality: '%env(string:OPENAI_IMAGE_QUALITY)%'
-    app.openai_image_output_format: '%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%'
-    app.openai_image_background: '%env(string:OPENAI_IMAGE_BACKGROUND)%'
-    app.chattoolpdf_environment: '%env(string:CHATTOOLPDF_ENVIRONMENT)%'
-    app.chattoolpdf_service_url: '%env(string:CHATTOOLPDF_SERVICE_URL)%'
-    app.chattoolpdf_service_host: '%env(string:CHATTOOLPDF_SERVICE_HOST)%'
-    app.tika_url: '%env(string:TIKA_URL)%'
-    app.canvas_image_environment: '%env(string:CANVAS_IMAGE_ENVIRONMENT)%'
+    app.assistant_name: "%env(string:ASSISTANT_NAME)%"
+    app.qdrant_url: "%env(string:QDRANT_URL)%"
+    app.chat_qdrant_collection: "%env(string:QDRANT_CHAT_COLLECTION)%"
+    app.embedding_provider_url: "%env(string:EMBEDDING_PROVIDER_URL)%"
+    app.embedding_model: "%env(string:EMBEDDING_MODEL)%"
+    app.chat_provider_url: "%env(string:CHAT_PROVIDER_URL)%"
+    app.chat_model: "%env(string:CHAT_MODEL)%"
+    app.chat_timeout: "%env(float:CHAT_TIMEOUT)%"
+    app.chat_provider_kind: "%env(string:CHAT_PROVIDER_KIND)%"
+    app.embedding_provider_kind: "%env(string:EMBEDDING_PROVIDER_KIND)%"
+    app.chat_api_key: "%env(string:CHAT_API_KEY)%"
+    app.embedding_api_key: "%env(string:EMBEDDING_API_KEY)%"
+    app.openai_api_key: "%env(string:OPENAI_API_KEY)%"
+    app.openai_image_provider_url: "%env(string:OPENAI_IMAGE_PROVIDER_URL)%"
+    app.openai_image_model: "%env(string:OPENAI_IMAGE_MODEL)%"
+    app.openai_image_size: "%env(string:OPENAI_IMAGE_SIZE)%"
+    app.openai_image_quality: "%env(string:OPENAI_IMAGE_QUALITY)%"
+    app.openai_image_output_format: "%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%"
+    app.openai_image_background: "%env(string:OPENAI_IMAGE_BACKGROUND)%"
+    app.chattoolpdf_environment: "%env(string:CHATTOOLPDF_ENVIRONMENT)%"
+    app.chattoolpdf_service_url: "%env(string:CHATTOOLPDF_SERVICE_URL)%"
+    app.chattoolpdf_service_host: "%env(string:CHATTOOLPDF_SERVICE_HOST)%"
+    app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
+    app.stirling_pdf_endpoint: "%env(string:STIRLING_PDF_ENDPOINT)%"
+    app.tika_url: "%env(string:TIKA_URL)%"
+    app.canvas_image_environment: "%env(string:CANVAS_IMAGE_ENVIRONMENT)%"
     app.qdrant_allowed_document_kinds:
         - chat_knowledge
     app.default_retrieve_limit: 4
     app.chat_prompt_max_history_items: 4
     app.chat_prompt_max_vector_matches: 2
-    app.greeting_instruction: 'Responde al saludo de forma amable, breve y natural. ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones detalles internos ni técnicos.'
-    app.clarification_instruction: 'No tienes suficiente información para responder con confianza. Responde brevemente, pide una sola aclaración concreta y ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones errores técnicos ni internos.'
+    app.greeting_instruction: "Responde al saludo de forma amable, breve y natural. ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones detalles internos ni técnicos."
+    app.clarification_instruction: "No tienes suficiente información para responder con confianza. Responde brevemente, pide una sola aclaración concreta y ES OBLIGATORIO responder en el mismo idioma del último mensaje del usuario. Si el idioma no está claro, usa el locale de la aplicación como respaldo. No menciones errores técnicos ni internos."
 
 services:
     # default configuration for services in *this* file
     _defaults:
-        autowire: true      # Automatically injects dependencies in your services.
+        autowire: true # Automatically injects dependencies in your services.
         autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
         bind:
-            $maxHistoryItems: '%app.chat_prompt_max_history_items%'
-            $maxVectorMatches: '%app.chat_prompt_max_vector_matches%'
+            $maxHistoryItems: "%app.chat_prompt_max_history_items%"
+            $maxVectorMatches: "%app.chat_prompt_max_vector_matches%"
 
     # makes classes in src/ available to be used as services
     # this creates a service per class whose id is the fully-qualified class name
     App\:
-        resource: '../src/'
+        resource: "../src/"
 
     App\Service\Vector\QdrantClient:
         arguments:
-            $qdrantUrl: '%app.qdrant_url%'
+            $qdrantUrl: "%app.qdrant_url%"
 
     App\Service\Vector\VectorContextRetriever:
         arguments:
-            $qdrantCollection: '%app.chat_qdrant_collection%'
-            $allowedDocumentKinds: '%app.qdrant_allowed_document_kinds%'
+            $qdrantCollection: "%app.chat_qdrant_collection%"
+            $allowedDocumentKinds: "%app.qdrant_allowed_document_kinds%"
 
     App\Service\Ai\Chat\ChatPromptBuilder: ~
 
     App\Service\Ai\Chat\LocalJsonChatProvider:
         arguments:
-            $providerUrl: '%app.chat_provider_url%'
-            $chatModel: '%app.chat_model%'
-            $timeout: '%app.chat_timeout%'
-        tags: ['app.chat_provider']
+            $providerUrl: "%app.chat_provider_url%"
+            $chatModel: "%app.chat_model%"
+            $timeout: "%app.chat_timeout%"
+        tags: ["app.chat_provider"]
 
     App\Service\Ai\Chat\OpenAiCompatibleChatProvider:
         arguments:
-            $providerUrl: '%app.chat_provider_url%'
-            $chatModel: '%app.chat_model%'
-            $timeout: '%app.chat_timeout%'
-            $apiKey: '%app.chat_api_key%'
-        tags: ['app.chat_provider']
+            $providerUrl: "%app.chat_provider_url%"
+            $chatModel: "%app.chat_model%"
+            $timeout: "%app.chat_timeout%"
+            $apiKey: "%app.chat_api_key%"
+        tags: ["app.chat_provider"]
 
     App\Service\Ai\Image\OpenAiImageGenerationProvider:
         arguments:
-            $providerUrl: '%app.openai_image_provider_url%'
-            $model: '%app.openai_image_model%'
-            $apiKey: '%app.openai_api_key%'
-            $fallbackApiKey: '%app.chat_api_key%'
-            $size: '%app.openai_image_size%'
-            $quality: '%app.openai_image_quality%'
-            $outputFormat: '%app.openai_image_output_format%'
-            $background: '%app.openai_image_background%'
+            $providerUrl: "%app.openai_image_provider_url%"
+            $model: "%app.openai_image_model%"
+            $apiKey: "%app.openai_api_key%"
+            $fallbackApiKey: "%app.chat_api_key%"
+            $size: "%app.openai_image_size%"
+            $quality: "%app.openai_image_quality%"
+            $outputFormat: "%app.openai_image_output_format%"
+            $background: "%app.openai_image_background%"
 
     App\Service\Ai\Chat\ChatProviderSelector:
         arguments:
-            $providerKind: '%app.chat_provider_kind%'
+            $providerKind: "%app.chat_provider_kind%"
             $providers: !tagged_iterator app.chat_provider
 
     App\Contract\ChatProviderInterface: '@App\Service\Ai\Chat\ChatProviderSelector'
 
     App\Service\Ai\Embedding\LocalJsonEmbeddingProvider:
         arguments:
-            $providerUrl: '%app.embedding_provider_url%'
-            $embeddingModel: '%app.embedding_model%'
-        tags: ['app.embedding_provider']
+            $providerUrl: "%app.embedding_provider_url%"
+            $embeddingModel: "%app.embedding_model%"
+        tags: ["app.embedding_provider"]
 
     App\Service\Ai\Embedding\OpenAiCompatibleEmbeddingProvider:
         arguments:
-            $providerUrl: '%app.embedding_provider_url%'
-            $embeddingModel: '%app.embedding_model%'
-            $apiKey: '%app.embedding_api_key%'
-        tags: ['app.embedding_provider']
+            $providerUrl: "%app.embedding_provider_url%"
+            $embeddingModel: "%app.embedding_model%"
+            $apiKey: "%app.embedding_api_key%"
+        tags: ["app.embedding_provider"]
 
     App\Service\Ai\Embedding\EmbeddingProviderSelector:
         arguments:
-            $providerKind: '%app.embedding_provider_kind%'
+            $providerKind: "%app.embedding_provider_kind%"
             $providers: !tagged_iterator app.embedding_provider
 
     App\Contract\EmbeddingProviderInterface: '@App\Service\Ai\Embedding\EmbeddingProviderSelector'
 
     App\Service\Assistant\AssistantResponder:
         arguments:
-            $defaultRetrieveLimit: '%app.default_retrieve_limit%'
-            $greetingInstruction: '%app.greeting_instruction%'
-            $clarificationInstruction: '%app.clarification_instruction%'
+            $defaultRetrieveLimit: "%app.default_retrieve_limit%"
+            $greetingInstruction: "%app.greeting_instruction%"
+            $clarificationInstruction: "%app.clarification_instruction%"
 
     App\Service\Vector\IndexDocumentProcessor:
         arguments:
-            $qdrantCollection: '%app.chat_qdrant_collection%'
+            $qdrantCollection: "%app.chat_qdrant_collection%"
 
     App\Service\ChatToolPdf\PdfImageClient:
         arguments:
-            $servicePdfUrl: '%app.chattoolpdf_service_url%'
-            $servicePdfHost: '%app.chattoolpdf_service_host%'
+            $servicePdfUrl: "%app.chattoolpdf_service_url%"
+            $servicePdfHost: "%app.chattoolpdf_service_host%"
+
+    App\Service\ChatToolPdf\ChatToolPdfMessageProcessor:
+        arguments:
+            $model: "%app.chattoolpdf_model%"
+            $stirlingEndpoint: "%app.stirling_pdf_endpoint%"
 
     App\Service\ChatToolPdf\TikaTextExtractor:
         arguments:
-            $tikaUrl: '%app.tika_url%'
+            $tikaUrl: "%app.tika_url%"
 
     App\Service\Canvas\CanvasGenerationService:
         arguments:
-            $canvasEnvironment: '%app.canvas_image_environment%'
+            $canvasEnvironment: "%app.canvas_image_environment%"
 
     App\Controller\Api\ChatController:
         arguments:
-            $maxHistoryItems: '%app.chat_prompt_max_history_items%'
-            $assistantName: '%app.assistant_name%'
+            $maxHistoryItems: "%app.chat_prompt_max_history_items%"
+            $assistantName: "%app.assistant_name%"
 
     App\Controller\Api\ChatToolPdfController:
         arguments:
-            $assistantName: '%app.assistant_name%'
-            $chattoolpdfEnvironment: '%app.chattoolpdf_environment%'
+            $assistantName: "%app.assistant_name%"
+            $chattoolpdfEnvironment: "%app.chattoolpdf_environment%"
 
     App\Service\ChatToolPdf\PdfClient:
         arguments:
-            $servicePdfUrl: '%app.chattoolpdf_service_url%'
-            $servicePdfHost: '%app.chattoolpdf_service_host%'
+            $servicePdfUrl: "%app.chattoolpdf_service_url%"
+            $servicePdfHost: "%app.chattoolpdf_service_host%"
 
     App\Controller\Api\BootstrapController:
         arguments:
-            $assistantName: '%app.assistant_name%'
+            $assistantName: "%app.assistant_name%"
 
     App\Controller\Api\HealthController:
         arguments:
-            $assistantName: '%app.assistant_name%'
+            $assistantName: "%app.assistant_name%"
 
     App\Command\ReindexQdrantCollectionCommand:
         arguments:
-            $qdrantCollection: '%app.chat_qdrant_collection%'
+            $qdrantCollection: "%app.chat_qdrant_collection%"
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
+    Aws\S3\S3Client:
+        arguments:
+            - version: "latest"
+              region: "us-east-1" # MinIO requiere una región, pon esta por defecto
+              endpoint: "%env(MINIO_ENDPOINT)%"
+              use_path_style_endpoint: true # ¡CRUCIAL PARA MINIO!
+              credentials:
+                  key: "%env(MINIO_ACCESS_KEY)%"
+                  secret: "%env(MINIO_SECRET_KEY)%"
+    # ==============================================================
+    # CONFIGURACIÓN DEL NUEVO SDK DE QDRANT (Aislado del legacy)
+    # ==============================================================
+    # 1. Configuramos el Config del SDK
+    hkulekci.qdrant.config:
+        class: Qdrant\Config
+        arguments:
+            $host: "%app.qdrant_url%" # Reutilizamos tu variable de entorno existente
+            # Si en el futuro usas API Key, descomenta la siguiente línea y pásale la variable
+            # $apiKey: '%env(QDRANT_API_KEY)%'
+
+    # 2. Registramos el Builder sin instanciarlo globalmente
+    hkulekci.qdrant.http_builder:
+        class: Qdrant\Http\Builder
+
+    # 3. Creamos el transporte HTTP usando el Builder como factory
+    hkulekci.qdrant.transport:
+        factory: ["@hkulekci.qdrant.http_builder", "build"]
+        arguments:
+            - "@hkulekci.qdrant.config"
+
+    # 4. Registramos el cliente oficial de Qdrant bajo un alias explícito
+    # Esto evita que Symfony lo confunda o sobrescriba tu QdrantClient legacy
+    qdrant.official_client:
+        class: Qdrant\Qdrant
+        arguments:
+            $transport: "@hkulekci.qdrant.transport"
