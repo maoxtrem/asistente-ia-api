@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Service\Vector;
 
+use App\Contract\EmbeddingProviderInterface;
 use Qdrant\Models\Filter\Condition\MatchString;
 use Qdrant\Models\Filter\Filter;
 use Qdrant\Models\PointStruct;
 use Qdrant\Models\PointsStruct;
+use Qdrant\Models\Request\CreateCollection;
 use Qdrant\Models\Request\ScrollRequest;
+use Qdrant\Models\Request\VectorParams;
 use Qdrant\Models\VectorStruct;
 use Qdrant\Qdrant;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -19,8 +22,9 @@ final readonly class ChatContextRetriever
     public function __construct(
         #[Autowire(service: 'qdrant.official_client')]
         private Qdrant $qdrant,
-        #[Autowire('%app.chat_qdrant_collection%')]
+        #[Autowire('%app.chat_qdrant_pdf_collection%')]
         private string $collectionName,
+        private EmbeddingProviderInterface $embeddingProvider,
     ) {
     }
 
@@ -63,8 +67,13 @@ final readonly class ChatContextRetriever
             }
 
             $payload = $point['payload'];
+            $role = (string) ($payload['role'] ?? 'user');
+            if ($role === 'assistant_html') {
+                continue;
+            }
+
             $messages[] = [
-                'role' => (string) ($payload['role'] ?? 'user'),
+                'role' => $role,
                 'content' => (string) ($payload['content'] ?? ''),
                 'timestamp' => (int) ($payload['timestamp'] ?? 0),
             ];
@@ -86,19 +95,34 @@ final readonly class ChatContextRetriever
      * La colección actual utiliza un vector sin nombre, por eso no se asigna
      * el nombre "message_vector" al VectorStruct.
      *
-     * @param array<int, float|int> $vector
      */
-    public function saveMessage(string $chatId, string $role, string $content, array $vector): void
+    public function saveMessage(string $chatId, string $role, string $content, ?string $embeddingContent = null): void
     {
         $chatId = trim($chatId);
         $role = trim($role);
         $content = trim($content);
 
-        if ($chatId === '' || $role === '' || $content === '' || $vector === []) {
+        if ($chatId === '' || $role === '' || $content === '') {
             return;
         }
 
-        $normalizedVector = array_map(static fn (float|int $value): float => (float) $value, $vector);
+        $vector = $this->embeddingProvider->embed($embeddingContent !== null ? $embeddingContent : $content);
+        if ($vector === []) {
+            return;
+        }
+
+        $normalizedVector = array_values(array_map(static fn (float|int $value): float => (float) $value, $vector));
+        $collection = $this->qdrant->collections($this->collectionName);
+
+        $exists = $collection->exists();
+        if (($exists['result']['exists'] ?? false) !== true) {
+            $collection->create(
+                (new CreateCollection())->addVector(
+                    new VectorParams(count($normalizedVector), VectorParams::DISTANCE_COSINE)
+                )
+            );
+        }
+
         $point = new PointStruct(
             (string) Uuid::v4(),
             new VectorStruct($normalizedVector),
@@ -113,9 +137,6 @@ final readonly class ChatContextRetriever
         $points = new PointsStruct();
         $points->addPoint($point);
 
-        $this->qdrant
-            ->collections($this->collectionName)
-            ->points()
-            ->upsert($points, ['wait' => true]);
+        $collection->points()->upsert($points, ['wait' => 'true']);
     }
 }

@@ -10,6 +10,7 @@ parameters:
     app.assistant_name: "%env(string:ASSISTANT_NAME)%"
     app.qdrant_url: "%env(string:QDRANT_URL)%"
     app.chat_qdrant_collection: "%env(string:QDRANT_CHAT_COLLECTION)%"
+    app.chat_qdrant_pdf_collection: "%env(string:QDRANT_CHAT_PDF_COLLECTION)%"
     app.embedding_provider_url: "%env(string:EMBEDDING_PROVIDER_URL)%"
     app.embedding_model: "%env(string:EMBEDDING_MODEL)%"
     app.chat_provider_url: "%env(string:CHAT_PROVIDER_URL)%"
@@ -31,6 +32,7 @@ parameters:
     app.chattoolpdf_service_host: "%env(string:CHATTOOLPDF_SERVICE_HOST)%"
     app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
     app.stirling_pdf_endpoint: "%env(string:STIRLING_PDF_ENDPOINT)%"
+    app.gotenberg_endpoint: "%env(string:GOTENBERG_ENDPOINT)%"
     app.tika_url: "%env(string:TIKA_URL)%"
     app.canvas_image_environment: "%env(string:CANVAS_IMAGE_ENVIRONMENT)%"
     app.qdrant_allowed_document_kinds:
@@ -138,6 +140,7 @@ services:
         arguments:
             $model: "%app.chattoolpdf_model%"
             $stirlingEndpoint: "%app.stirling_pdf_endpoint%"
+            $gotenbergEndpoint: "%app.gotenberg_endpoint%"
 
     App\Service\ChatToolPdf\TikaTextExtractor:
         arguments:
@@ -202,6 +205,7 @@ services:
 
     # 3. Creamos el transporte HTTP usando el Builder como factory
     hkulekci.qdrant.transport:
+        class: Qdrant\Http\Transport
         factory: ["@hkulekci.qdrant.http_builder", "build"]
         arguments:
             - "@hkulekci.qdrant.config"

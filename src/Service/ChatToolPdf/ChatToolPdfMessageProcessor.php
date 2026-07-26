@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Service\ChatToolPdf;
 
 use App\Entity\Loger;
+use App\Service\Vector\ChatContextRetriever;
 use Doctrine\ORM\EntityManagerInterface;
 use League\Flysystem\FilesystemOperator;
 use OSP\Message\AsistenteIA\ChatToolIAPdfResponse;
@@ -13,6 +14,7 @@ use Psr\Log\LoggerInterface;
 use Symfony\AI\Agent\Agent;
 use Symfony\AI\Platform\Message\Content\Image;
 use Symfony\AI\Platform\Message\Content\Text;
+use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\SystemMessage;
 use Symfony\AI\Platform\Message\UserMessage;
@@ -25,6 +27,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final readonly class ChatToolPdfMessageProcessor
 {
+    private const QUESTION_SYSTEM_PROMPT = 'Responde como un asistente conversacional. Usa el historial como contexto y determina por la intención del usuario si debes mantener el formato de una respuesta previa o responder de forma conversacional. Si el usuario hace referencia a una respuesta estructurada anterior, conserva su formato; de lo contrario, responde de forma clara, breve y natural. No inventes información y responde en el mismo idioma del usuario.';
     private const SYSTEM_PROMPT = 'Eres un experto estimador de obra. Tu tarea es analizar planos arquitectónicos y generar cotizaciones en formato JSON.
 PASOS OBLIGATORIOS:
 1. Analiza el mensaje del usuario para extraer precios, tarifas o materiales si los menciona.
@@ -87,7 +90,117 @@ PASOS OBLIGATORIOS:
 6. El campo message debe resumir el resultado del análisis y la intención de la cotización.
 7. El campo quotation no debe ser null. Si hay poca información, completa con estimaciones conservadoras y acláralo en notes.';
     private const DEFAULT_USER_QUESTION = 'Por favor, genérame una cotización a partir de este plano. Usa moneda COP como estándar, analiza cada detalle posible del plano y estima valores razonables si faltan datos.';
+ private const HTML_SKELETON_PROMPT = <<<PROMPT
+Eres un desarrollador frontend experto. Tu única tarea es tomar los datos de la cotización proporcionada y mapearlos dentro de este esqueleto HTML.
 
+REGLAS OBLIGATORIAS:
+1. Inyecta los datos en los marcadores (ej. [QUOTATION_NUMBER]). Genera una fila <tr> por cada ítem.
+2. Mantén el CSS proporcionado en la etiqueta <style>. Puedes agregar estilos en línea (inline styles) si necesitas, usa css nativo.
+3. Mantén la estructura de <!DOCTYPE html>, <html>, <head> y <body>.
+4. RESPONDE ÚNICAMENTE CON EL CÓDIGO HTML FINAL. No incluyas explicaciones ni bloques de Markdown.
+
+ESQUELETO HTML BASE:
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Cotización</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f3f4f6; color: #374151; padding: 20px; margin: 0; }
+        .container { max-width: 900px; margin: 0 auto; background-color: #ffffff; padding: 40px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }
+        header { display: table; width: 100%; border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px; }
+        .header-left { display: table-cell; vertical-align: top; }
+        .header-right { display: table-cell; vertical-align: top; text-align: right; }
+        h1 { font-size: 28px; font-weight: bold; text-transform: uppercase; color: #111827; margin: 0; }
+        .text-sm { font-size: 14px; margin: 4px 0; color: #4b5563; }
+        .mb-8 { margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; }
+        th { background-color: #1f2937; color: white; padding: 12px; text-align: left; }
+        th.text-center, td.text-center { text-align: center; }
+        th.text-right, td.text-right { text-align: right; }
+        td { padding: 12px; border-bottom: 1px solid #e5e7eb; }
+        tr:nth-child(even) { background-color: #f9fafb; }
+        .totales-box { width: 300px; float: right; background-color: #f9fafb; padding: 15px; border: 1px solid #e5e7eb; border-radius: 5px; }
+        .totales-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+        .total-final { font-size: 18px; font-weight: bold; border-top: 1px solid #d1d5db; padding-top: 10px; margin-top: 10px; color: #111827; }
+        .clearfix::after { content: ""; clear: both; display: table; }
+        footer { border-top: 2px solid #e5e7eb; padding-top: 20px; font-size: 14px; color: #4b5563; clear: both; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Encabezado -->
+        <header>
+            <div class="header-left">
+                <h1>Cotización</h1>
+                <p style="font-size: 18px; font-weight: bold; margin: 15px 0 5px; color: #111827;">[LEGAL_NAME_EMISOR]</p>
+                <p class="text-sm">NIT: [TAX_ID_EMISOR]</p>
+                <p class="text-sm">[EMAIL_EMISOR] | [PHONE_EMISOR]</p>
+            </div>
+            <div class="header-right">
+                <p class="text-sm" style="font-weight: bold; text-transform: uppercase;">Número</p>
+                <p style="font-size: 20px; font-weight: bold; margin: 5px 0; color: #111827;">[QUOTATION_NUMBER]</p>
+                <p class="text-sm">Fecha: [DATE]</p>
+                <p class="text-sm">Válida hasta: [VALID_UNTIL]</p>
+            </div>
+        </header>
+
+        <!-- Cliente -->
+        <section class="mb-8">
+            <h2 style="font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; color: #6b7280;">Cotizado a:</h2>
+            <p style="font-size: 16px; font-weight: bold; margin: 10px 0 5px; color: #111827;">[LEGAL_NAME_CLIENTE]</p>
+            <p class="text-sm">Atención: [CONTACT_PERSON_CLIENTE]</p>
+            <p class="text-sm">NIT: [TAX_ID_CLIENTE]</p>
+            <p class="text-sm">[ADDRESS_CLIENTE], [CITY_CLIENTE]</p>
+        </section>
+
+        <!-- Tabla de Ítems -->
+        <section class="mb-8">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Descripción</th>
+                        <th class="text-center">Cant.</th>
+                        <th class="text-right">Precio Unit.</th>
+                        <th class="text-right">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- LA IA DEBE GENERAR LOS <tr> AQUÍ BASADO EN LOS ITEMS DEL JSON -->
+                    <tr>
+                        <td>[ITEM_DESCRIPTION]</td>
+                        <td class="text-center">[ITEM_QUANTITY]</td>
+                        <td class="text-right">[ITEM_UNIT_PRICE]</td>
+                        <td class="text-right" style="font-weight: bold;">[ITEM_TOTAL]</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Totales -->
+        <section class="mb-8 clearfix">
+            <div class="totales-box">
+                <div class="totales-row"><span>Subtotal:</span> <span>[SUBTOTAL]</span></div>
+                <div class="totales-row"><span>Impuestos:</span> <span>[TAXES]</span></div>
+                <div class="totales-row"><span>Descuentos:</span> <span>[DISCOUNTS]</span></div>
+                <div class="totales-row total-final">
+                    <span>Total:</span>
+                    <span>[TOTAL]</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Notas -->
+        <footer>
+            <h3 style="font-size: 14px; text-transform: uppercase; margin-bottom: 10px; color: #6b7280;">Términos y Notas</h3>
+            <p><strong>Forma de pago:</strong> [PAYMENT_METHOD]</p>
+            <p><strong>Tiempo de entrega:</strong> [DELIVERY_TIME]</p>
+            <p style="margin-top: 15px; white-space: pre-line;">[NOTES]</p>
+        </footer>
+    </div>
+</body>
+</html>
+PROMPT;
     public function __construct(
         private LoggerInterface $logger,
         private MessageBusInterface $messageBus,
@@ -95,6 +208,8 @@ PASOS OBLIGATORIOS:
         private HttpClientInterface $httpClient,
         private string $model,
         private string $stirlingEndpoint,
+        private string $gotenbergEndpoint,
+        private ChatContextRetriever $chatContextRetriever,
         #[Autowire(service: 'ai.traceable_platform.openai')]
         private PlatformInterface $platform,
         #[Autowire(service: 'planos.storage')]
@@ -106,56 +221,152 @@ PASOS OBLIGATORIOS:
     public function process(ChatToolPdfMessage $message): void
     {
         $attachmentPath = $message->getAttachmentKey();
+        $chatId = (string) $message->getChatId();
+        $userText = $message->getMessage();
+        $aiContent = null;
+        $pdfUrl = null;
 
         if (!is_string($attachmentPath) || trim($attachmentPath) === '') {
-            $aiContent = $this->answerQuestionOnly($message->getMessage());
-            $this->dispatchResponse($message, null, $aiContent);
-            return;
-        }
+            $aiContent = $this->answerQuestionOnly($userText, $chatId);
+        } else {
+            $attachmentPath = trim($attachmentPath);
 
-        $aiContent = null;
-        $attachmentPath = trim($attachmentPath);
+            try {
+                if (!$this->planosStorage->fileExists($attachmentPath)) {
+                    $this->logger->error('[ChatToolPdfMessageProcessor] El archivo no existe en storage.', [
+                        'attachment_path' => $attachmentPath,
+                        'chat_id' => $message->getChatId(),
+                    ]);
 
-        try {
-            if (!$this->planosStorage->fileExists($attachmentPath)) {
-                $this->logger->error('[ChatToolPdfMessageProcessor] El archivo no existe en storage.', [
+                    $aiContent = $this->answerQuestionOnly($userText, $chatId);
+                } else {
+                    $zipBinaryContent = $this->convertAndStorePdf($attachmentPath, $message);
+                    $aiContent = $this->analyzeZipBinary($zipBinaryContent, $userText, $chatId);
+                }
+            } catch (\Throwable $exception) {
+                $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible completar el flujo de IA.', [
                     'attachment_path' => $attachmentPath,
                     'chat_id' => $message->getChatId(),
+                    'error' => $exception->getMessage(),
                 ]);
+            }
+        }
 
-                $aiContent = $this->answerQuestionOnly($message->getMessage());
-                $this->dispatchResponse($message, null, $aiContent);
-                return;
+        if ($aiContent !== null && trim($aiContent) !== '') {
+            $pdfUrl = $this->generateAndStorePdfFromContent($aiContent, $chatId);
+            $this->saveConversationHistory($chatId, $userText, $aiContent);
+        }
+
+        $this->dispatchResponse(
+            $message,
+            is_string($attachmentPath) && trim($attachmentPath) !== '' ? trim($attachmentPath) : null,
+            $aiContent,
+            $pdfUrl,
+        );
+    }
+
+    private function generateAndStorePdfFromContent(string $content, string $chatId): ?string
+    {
+        $decoded = json_decode(trim($content), true);
+        $html = is_array($decoded) ? trim((string) ($decoded['html'] ?? '')) : '';
+
+        if ($html === '') {
+            return null;
+        }
+
+        $tempHtmlPath = tempnam(sys_get_temp_dir(), 'quotation_html_');
+        if ($tempHtmlPath === false || file_put_contents($tempHtmlPath, $html) === false) {
+            throw new \RuntimeException('No fue posible preparar el HTML para Gotenberg.');
+        }
+
+        try {
+            $formData = new FormDataPart([
+                'files' => DataPart::fromPath($tempHtmlPath, 'index.html', 'text/html'),
+            ]);
+            $response = $this->httpClient->request('POST', $this->gotenbergEndpoint, [
+                'headers' => $formData->getPreparedHeaders()->toArray(),
+                'body' => $formData->bodyToIterable(),
+            ]);
+
+            if ($response->getStatusCode() !== 200) {
+                throw new \RuntimeException(sprintf(
+                    'Gotenberg no pudo convertir el HTML a PDF. Status %d: %s',
+                    $response->getStatusCode(),
+                    $response->getContent(false),
+                ));
             }
 
-            $zipBinaryContent = $this->convertAndStorePdf($attachmentPath, $message);
-            $aiContent = $this->analyzeZipBinary($zipBinaryContent, $message->getMessage());
+            // Se guarda como los adjuntos: en planos.storage y se conserva
+            // la clave del objeto, no una URL interna del contenedor.
+            $pdfPath = bin2hex(random_bytes(32)) . '.pdf';
+            $this->planosStorage->write(
+                $pdfPath,
+                $response->getContent(),
+                ['visibility' => 'public'],
+            );
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] PDF HTML generado y guardado en MinIO.', [
+                'chat_id' => $chatId,
+                'pdf_key' => $pdfPath,
+                'bucket' => 'planos-entrada',
+            ]);
+
+            return $pdfPath;
+        } finally {
+            if (file_exists($tempHtmlPath)) {
+                unlink($tempHtmlPath);
+            }
+        }
+    }
+
+    private function saveConversationHistory(string $chatId, string $userText, string $aiContent): void
+    {
+        try {
+            $this->chatContextRetriever->saveMessage($chatId, 'user', $userText);
         } catch (\Throwable $exception) {
-            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible completar el flujo de IA.', [
-                'attachment_path' => is_string($attachmentPath) ? $attachmentPath : null,
-                'chat_id' => $message->getChatId(),
+            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible guardar el mensaje del usuario en Qdrant.', [
+                'chat_id' => $chatId,
                 'error' => $exception->getMessage(),
             ]);
         }
 
-        $this->dispatchResponse($message, is_string($attachmentPath) && trim($attachmentPath) !== '' ? trim($attachmentPath) : null, $aiContent);
+        try {
+            $decoded = json_decode(trim($aiContent), true);
+            $html = is_array($decoded) ? trim((string) ($decoded['html'] ?? '')) : '';
+
+            if ($html !== '' && is_array($decoded)) {
+                unset($decoded['html']);
+                $jsonContent = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if (is_string($jsonContent) && $jsonContent !== '') {
+                    $this->chatContextRetriever->saveMessage($chatId, 'assistant', $jsonContent, $jsonContent);
+                    $this->chatContextRetriever->saveMessage($chatId, 'assistant_html', $html, $html);
+                }
+            } else {
+                $this->chatContextRetriever->saveMessage($chatId, 'assistant', $aiContent, $aiContent);
+            }
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible guardar la respuesta de la IA en Qdrant.', [
+                'chat_id' => $chatId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
-    private function answerQuestionOnly(string $question): string
+    private function answerQuestionOnly(string $question, string $chatId): string
     {
-        return $this->callOpenAiQuestionOnly($this->normalizeQuestion($question));
+        return $this->callOpenAiQuestionOnly($this->normalizeQuestion($question), $chatId);
     }
 
-    private function analyzeZipBinary(string $zipBinary, string $question): string
+    private function analyzeZipBinary(string $zipBinary, string $question, string $chatId): string
     {
         $imagePaths = $this->extractImagesToTempFiles($zipBinary);
 
         try {
             if ([] === $imagePaths) {
-                return $this->answerQuestionOnly($question);
+                return $this->answerQuestionOnly($question, $chatId);
             }
 
-            return $this->callOpenAiWithImages($this->normalizeQuestion($question), $imagePaths);
+            return $this->callOpenAiWithImages($this->normalizeQuestion($question), $imagePaths, $chatId);
         } finally {
             // Limpieza garantizada de las imágenes temporales
             foreach ($imagePaths as $path) {
@@ -169,16 +380,39 @@ PASOS OBLIGATORIOS:
     /**
      * @param array<int, string> $imagePaths
      */
-    private function callOpenAiQuestionOnly(string $question): string
+    private function callOpenAiQuestionOnly(string $question, string $chatId): string
     {
         $agent = new Agent($this->platform, $this->model);
-        $message = new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_USER_QUESTION));
+        $history = $this->getConversationHistory($chatId);
+        $prompt = self::QUESTION_SYSTEM_PROMPT . ' Si el usuario pide un cambio en la cotización anterior, devuelve el JSON completo con los cambios aplicados.';
 
-        $response = $agent->call($message);
+        $messages = $this->buildMessagesWithHistory(
+            $chatId,
+            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_USER_QUESTION)),
+            $prompt,
+            $history,
+        );
+
+        $response = $agent->call(new MessageBag(...$messages));
         $content = trim((string) $response->getContent());
 
         if ($content === '') {
             throw new \RuntimeException('La respuesta de OpenAI no devolvio contenido.');
+        }
+
+        $contentArray = $this->normalizeStructuredContent($content);
+
+        if ($contentArray !== null && !empty($contentArray['quotation'])) {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Modificación detectada. Iniciando generación de HTML (Paso 2).');
+
+            $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation']);
+            $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            if (!is_string($encoded) || $encoded === '') {
+                throw new \RuntimeException('No fue posible serializar la cotización modificada.');
+            }
+
+            return $encoded;
         }
 
         $this->logger->info('[ChatToolPdfMessageProcessor] Respuesta de OpenAI sin adjuntos recibida.', [
@@ -189,9 +423,42 @@ PASOS OBLIGATORIOS:
     }
 
     /**
+     * Genera el HTML inyectando la cotización en el esqueleto definido.
+     *
+     * @param array<string, mixed> $quotationData
+     */
+    private function callOpenAiQuestionOnlyHtmlSkeleton(array $quotationData): string
+    {
+        $agent = new Agent($this->platform, $this->model);
+        $quotationJson = json_encode($quotationData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($quotationJson) || $quotationJson === '') {
+            throw new \RuntimeException('No fue posible serializar los datos de la cotización para generar el HTML.');
+        }
+
+        $userPrompt = "Datos de la cotización para inyectar:\n" . $quotationJson;
+        $messages = new MessageBag(
+            new SystemMessage(self::HTML_SKELETON_PROMPT),
+            new UserMessage(new Text($userPrompt)),
+        );
+
+        $response = $agent->call($messages);
+        $html = trim((string) $response->getContent());
+        $html = preg_replace('/^```html\s*/i', '', $html) ?? $html;
+        $html = preg_replace('/\s*```$/', '', $html) ?? $html;
+        $html = trim($html);
+
+        if ($html === '') {
+            throw new \RuntimeException('La respuesta de OpenAI para el HTML no devolvió contenido.');
+        }
+
+        return $html;
+    }
+
+    /**
      * @param array<int, string> $imagePaths
      */
-    private function callOpenAiWithImages(string $question, array $imagePaths): string
+    private function callOpenAiWithImages(string $question, array $imagePaths, string $chatId): string
     {
         $agent = new Agent($this->platform, $this->model);
         $messageParts = [new Text($question !== '' ? $question : self::DEFAULT_USER_QUESTION)];
@@ -201,12 +468,13 @@ PASOS OBLIGATORIOS:
             $messageParts[] = Image::fromFile($path);
         }
 
-        $messages = new MessageBag(
-            new SystemMessage(self::SYSTEM_PROMPT),
-            new UserMessage(...$messageParts)
+        $messages = $this->buildMessagesWithHistory(
+            $chatId,
+            new UserMessage(...$messageParts),
+            self::SYSTEM_PROMPT,
         );
 
-        $response = $agent->call($messages);
+        $response = $agent->call(new MessageBag(...$messages));
 
         $content = $response->getContent();
         $contentArray = $this->normalizeStructuredContent($content);
@@ -215,9 +483,12 @@ PASOS OBLIGATORIOS:
             throw new \RuntimeException('La respuesta de OpenAI no devolvio una estructura de cotizacion valida.');
         }
 
+        $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando generación de HTML (Paso 2).');
+        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation']);
+
         $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($encoded) || '' === $encoded) {
-            throw new \RuntimeException('No fue posible serializar la respuesta estructurada de OpenAI.');
+            throw new \RuntimeException('No fue posible serializar la respuesta final.');
         }
 
         $this->logger->info('[ChatToolPdfMessageProcessor] Respuesta de OpenAI recibida.', [
@@ -226,6 +497,62 @@ PASOS OBLIGATORIOS:
         ]);
 
         return $encoded;
+    }
+
+    /**
+     * Construye los mensajes en el orden que necesita el agente:
+     * instrucciones del sistema, historial cronológico y mensaje actual.
+     *
+     * @return array<int, SystemMessage|UserMessage|AssistantMessage>
+     */
+    /**
+     * @param array<int, array{role: string, content: string}>|null $history
+     * @return array<int, SystemMessage|UserMessage|AssistantMessage>
+     */
+    private function buildMessagesWithHistory(string $chatId, UserMessage $currentMessage, string $systemPrompt, ?array $history = null): array
+    {
+        $messages = [new SystemMessage($systemPrompt)];
+
+        foreach ($history ?? $this->getConversationHistory($chatId) as $historyMessage) {
+            $content = trim((string) ($historyMessage['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+
+            $role = strtolower(trim((string) ($historyMessage['role'] ?? '')));
+            if ($role === 'assistant') {
+                $messages[] = new AssistantMessage(new Text($content));
+                continue;
+            }
+
+            if ($role === 'user') {
+                $messages[] = new UserMessage(new Text($content));
+            }
+        }
+
+        $messages[] = $currentMessage;
+
+        return $messages;
+    }
+
+    /**
+     * El historial es contextual; si Qdrant no está disponible no debe impedir
+     * que el agente procese el mensaje actual.
+     *
+     * @return array<int, array{role: string, content: string}>
+     */
+    private function getConversationHistory(string $chatId): array
+    {
+        try {
+            return $this->chatContextRetriever->getHistoryBySession($chatId);
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible recuperar el historial desde Qdrant.', [
+                'chat_id' => $chatId,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return [];
+        }
     }
 
     private function convertAndStorePdf(string $attachmentPath, ChatToolPdfMessage $message): string
@@ -333,7 +660,7 @@ PASOS OBLIGATORIOS:
         return $imagePaths;
     }
 
-    private function dispatchResponse(ChatToolPdfMessage $message, ?string $attachmentPath, ?string $content = null): void
+    private function dispatchResponse(ChatToolPdfMessage $message, ?string $attachmentPath, ?string $content = null, ?string $pdfUrl = null): void
     {
         $resolvedContent = $content !== null && trim($content) !== '' ? $content : $message->getMessage();
 
@@ -347,7 +674,7 @@ PASOS OBLIGATORIOS:
             chatId: $message->getChatId(),
             userIdentifier: $message->getUserIdentifier(),
             content: $resolvedContent,
-            pdfUrl: null,
+            pdfUrl: $pdfUrl,
             mercureTopic: $message->getMercureTopic(),
             originalNameAttachment: $attachmentPath !== null ? basename($attachmentPath) : null,
             attachmentPath: $message->getAttachmentKey(),
