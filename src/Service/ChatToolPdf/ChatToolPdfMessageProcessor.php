@@ -27,14 +27,9 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final readonly class ChatToolPdfMessageProcessor
 {
-    private const QUESTION_SYSTEM_PROMPT = 'Responde como un asistente conversacional. Usa el historial como contexto y determina por la intención del usuario si debes mantener el formato de una respuesta previa o responder de forma conversacional. Si el usuario hace referencia a una respuesta estructurada anterior, conserva su formato; de lo contrario, responde de forma clara, breve y natural. No inventes información y responde en el mismo idioma del usuario.';
-    private const SYSTEM_PROMPT = 'Eres un experto estimador de obra. Tu tarea es analizar planos arquitectónicos y generar cotizaciones en formato JSON.
-PASOS OBLIGATORIOS:
-1. Analiza el mensaje del usuario para extraer precios, tarifas o materiales si los menciona.
-2. Analiza el plano adjunto para identificar áreas, elementos y cantidades lógicas.
-3. Si faltan precios, usa supuestos razonables y explícitalos dentro de notes.
-4. Nunca respondas con negativa, evasiva o texto fuera del JSON.
-5. Responde SOLO en JSON válido conservando exactamente esta estructura: 
+    private const QUESTION_SYSTEM_PROMPT = 'Responde como un asistente conversacional en el mismo idioma del usuario. Usa el historial proporcionado como contexto y determina por la intención de la pregunta actual si el usuario está editando una cotización anterior.
+
+Si la pregunta solicita modificar, actualizar, corregir o recalcular una cotización del historial, devuelve EXCLUSIVAMENTE un JSON válido (puedes usar un bloque de markdown ```json o texto plano directo del JSON, sin texto introductorio ni despedidas) con los cambios aplicados, conservando de forma estricta las claves "message" y "quotation" con la siguiente estructura exacta:
 {
   "message": "string",
   "quotation": {
@@ -86,12 +81,73 @@ PASOS OBLIGATORIOS:
     "total": 0,
     "notes": "string"
   }
-}.
+}
+
+Si la pregunta no solicita una edición de la cotización, responde únicamente con texto conversacional claro y breve; no devuelvas JSON. No inventes información ni crees una cotización nueva cuando no exista una cotización relacionada en el historial.';
+    private const SYSTEM_PROMPT = 'Eres un experto estimador de obra. Tu tarea es analizar planos arquitectónicos y generar cotizaciones en formato JSON.
+PASOS OBLIGATORIOS:
+1. Analiza el mensaje del usuario para extraer precios, tarifas o materiales si los menciona.
+2. Analiza el plano adjunto para identificar áreas, elementos y cantidades lógicas.
+3. Si faltan precios, usa supuestos razonables y explícitalos dentro de notes.
+4. Nunca respondas con negativa, evasiva o texto fuera del JSON.
+5. Responde SOLO en JSON válido conservando exactamente esta estructura:
+{
+  "message": "string",
+  "quotation": {
+    "quotation_number": "string",
+    "status": "string",
+    "date": "string",
+    "valid_until": "string",
+    "currency": "string",
+    "issuer": {
+      "legal_name": "string",
+      "tax_id": "string",
+      "address": "string",
+      "city": "string",
+      "country": "string",
+      "email": "string",
+      "phone": "string"
+    },
+    "client": {
+      "legal_name": "string",
+      "tax_id": "string",
+      "contact_person": "string",
+      "address": "string",
+      "city": "string",
+      "country": "string",
+      "email": "string",
+      "phone": "string"
+    },
+    "commercial_terms": {
+      "payment_method": "string",
+      "payment_terms": "string",
+      "delivery_time": "string",
+      "warranty": "string"
+    },
+    "items": [
+      {
+        "item_id": "string",
+        "description": "string",
+        "quantity": 0,
+        "unit_price": 0,
+        "discount_percentage": 0,
+        "tax_percentage": 0,
+        "subtotal": 0,
+        "total": 0
+      }
+    ],
+    "subtotal": 0,
+    "taxes": 0,
+    "discounts": 0,
+    "total": 0,
+    "notes": "string"
+  }
+}
 6. El campo message debe resumir el resultado del análisis y la intención de la cotización.
 7. El campo quotation no debe ser null. Si hay poca información, completa con estimaciones conservadoras y acláralo en notes.';
     private const DEFAULT_USER_QUESTION = 'Por favor, genérame una cotización a partir de este plano. Usa moneda COP como estándar, analiza cada detalle posible del plano y estima valores razonables si faltan datos.';
- private const HTML_SKELETON_PROMPT = <<<PROMPT
-Eres un desarrollador frontend experto. Tu única tarea es tomar los datos de la cotización proporcionada y mapearlos dentro de este esqueleto HTML.
+    private const HTML_SKELETON_PROMPT = <<<PROMPT
+Eres un desarrollador frontend experto en disenio. Tu única tarea es tomar los datos de la cotización proporcionada y mapearlos dentro de este esqueleto HTML si el usuario pide cambiar el disenio lo cambias con css nativo puedes modificar los valores de las etiquetas para dar un aspecto mas profecional.
 
 REGLAS OBLIGATORIAS:
 1. Inyecta los datos en los marcadores (ej. [QUOTATION_NUMBER]). Genera una fila <tr> por cada ítem.
@@ -207,6 +263,7 @@ PROMPT;
         private EntityManagerInterface $entityManager,
         private HttpClientInterface $httpClient,
         private string $model,
+        private int $maxHistoryMessages,
         private string $stirlingEndpoint,
         private string $gotenbergEndpoint,
         private ChatContextRetriever $chatContextRetriever,
@@ -253,7 +310,12 @@ PROMPT;
         }
 
         if ($aiContent !== null && trim($aiContent) !== '') {
-            $pdfUrl = $this->generateAndStorePdfFromContent($aiContent, $chatId);
+            // Las respuestas conversacionales no contienen HTML y no deben
+            // intentar pasar por el conversor de PDF.
+            if ($this->hasGeneratedHtml($aiContent)) {
+                $pdfUrl = $this->generateAndStorePdfFromContent($aiContent, $chatId);
+            }
+
             $this->saveConversationHistory($chatId, $userText, $aiContent);
         }
 
@@ -317,6 +379,13 @@ PROMPT;
                 unlink($tempHtmlPath);
             }
         }
+    }
+
+    private function hasGeneratedHtml(string $content): bool
+    {
+        $decoded = json_decode(trim($content), true);
+
+        return is_array($decoded) && trim((string) ($decoded['html'] ?? '')) !== '';
     }
 
     private function saveConversationHistory(string $chatId, string $userText, string $aiContent): void
@@ -384,7 +453,13 @@ PROMPT;
     {
         $agent = new Agent($this->platform, $this->model);
         $history = $this->getConversationHistory($chatId);
-        $prompt = self::QUESTION_SYSTEM_PROMPT . ' Si el usuario pide un cambio en la cotización anterior, devuelve el JSON completo con los cambios aplicados.';
+        $prompt = self::QUESTION_SYSTEM_PROMPT;
+
+        $this->logger->info('[ChatToolPdfMessageProcessor] Consultando historial para pregunta sin adjunto.', [
+            'chat_id' => $chatId,
+            'history_messages' => count($history),
+            'has_history' => $history !== [],
+        ]);
 
         $messages = $this->buildMessagesWithHistory(
             $chatId,
@@ -544,7 +619,7 @@ PROMPT;
     private function getConversationHistory(string $chatId): array
     {
         try {
-            return $this->chatContextRetriever->getHistoryBySession($chatId);
+            return $this->chatContextRetriever->getHistoryBySession($chatId, max(1, $this->maxHistoryMessages));
         } catch (\Throwable $exception) {
             $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible recuperar el historial desde Qdrant.', [
                 'chat_id' => $chatId,
@@ -758,8 +833,20 @@ PROMPT;
     private function decodeJsonContent(string $content): mixed
     {
         $normalized = trim($content);
-        $normalized = preg_replace('/^```(?:json)?\s*/i', '', $normalized) ?? $normalized;
-        $normalized = preg_replace('/\s*```$/', '', $normalized) ?? $normalized;
+
+        // La IA puede anteponer una explicación al JSON aunque el prompt
+        // indique que debe responder únicamente con la estructura.
+        if (preg_match('/```(?:json)?\s*(.*?)\s*```/is', $normalized, $matches) === 1) {
+            $normalized = trim($matches[1]);
+        } else {
+            // Permite recuperar un JSON incrustado en una respuesta textual.
+            $jsonStart = strpos($normalized, '{');
+            $jsonEnd = strrpos($normalized, '}');
+
+            if ($jsonStart !== false && $jsonEnd !== false && $jsonEnd > $jsonStart) {
+                $normalized = substr($normalized, $jsonStart, $jsonEnd - $jsonStart + 1);
+            }
+        }
 
         $decoded = json_decode(trim($normalized), true);
 
