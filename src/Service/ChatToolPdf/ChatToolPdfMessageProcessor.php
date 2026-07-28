@@ -146,9 +146,20 @@ PASOS OBLIGATORIOS:
 6. El campo message debe resumir el resultado del análisis y la intención de la cotización.
 7. El campo quotation no debe ser null. Si hay poca información, completa con estimaciones conservadoras y acláralo en notes.';
     private const IMAGE_ANALYSIS_SYSTEM_PROMPT = 'Eres un analista experto de planos arquitectónicos y cotizaciones.
-    Analiza exclusivamente la imagen adjunta y devuelve un resumen técnico de los elementos visibles: espacios, medidas, áreas, materiales, cantidades, niveles, instalaciones y cualquier dato útil para elaborar una cotización.
-    No inventes datos que no sean visibles; indica claramente cuando una estimación no sea posible. Responde en el mismo idioma del usuario y únicamente con el análisis de esta imagen, sin generar todavía la cotización final.
-    su es una cotizacion usa los datos que encuentras para crear la respuesta';
+    Analiza exclusivamente la imagen adjunta y devuelve la información técnica visible en esta imagen.
+    No inventes datos que no sean visibles; indica claramente cuando una estimación no sea posible. Responde en el mismo idioma del usuario.
+    En esta etapa no generes la cotización final, no devuelvas el JSON de quotation y no combines información de otras imágenes.
+    Responde ÚNICAMENTE con un JSON válido, sin texto introductorio ni bloques Markdown, usando exactamente esta estructura:
+    {
+      "summary": "resumen técnico de la imagen",
+      "spaces": [],
+      "measurements": [],
+      "materials": [],
+      "quantities": [],
+      "installations": [],
+      "notes": "limitaciones o datos no visibles"
+    }';
+    private const DEFAULT_QUOTATION_MESSAGE = 'Cotización generada a partir de la información disponible.';
     private const DEFAULT_USER_QUESTION = 'Por favor, genérame una cotización a partir de este plano. Usa moneda COP como estándar, analiza cada detalle posible del plano y estima valores razonables si faltan datos.';
     private const HTML_SKELETON_PROMPT = <<<PROMPT
 Eres un desarrollador frontend experto en disenio. Tu única tarea es tomar los datos de la cotización proporcionada y mapearlos dentro de este esqueleto HTML si el usuario pide cambiar el disenio lo cambias con css nativo puedes modificar los valores de las etiquetas para dar un aspecto mas profecional.
@@ -157,7 +168,7 @@ REGLAS OBLIGATORIAS:
 1. Inyecta los datos en los marcadores (ej. [QUOTATION_NUMBER]). Genera una fila <tr> por cada ítem.
 2. Usa el CSS proporcionado como base, pero puedes modificar colores, tipografías, espaciados, bordes, fondos y cualquier otro estilo cuando la instrucción del usuario lo solicite. La instrucción del usuario tiene prioridad sobre los valores visuales del esqueleto.
 3. Mantén la estructura de <!DOCTYPE html>, <html>, <head> y <body>.
-4. Para una cotización generada o actualizada hoy, usa la fecha actual indicada en la solicitud. Si no se especifica una fecha de validez, usa la fecha actual más 15 días.
+4. Si el usuario especifica una fecha, plazo, validez o vigencia, respétalos. Si no menciona nada sobre fechas, usa la fecha actual y una vigencia predeterminada de 15 días indicadas en la solicitud.
 5. RESPONDE ÚNICAMENTE CON EL CÓDIGO HTML FINAL. No incluyas explicaciones ni bloques de Markdown.
 
 ESQUELETO HTML BASE:
@@ -269,6 +280,7 @@ PROMPT;
         private HttpClientInterface $httpClient,
         private string $model,
         private int $maxHistoryMessages,
+        private int $maxImageAnalyses,
         private string $stirlingEndpoint,
         private string $gotenbergEndpoint,
         private ChatContextRetriever $chatContextRetriever,
@@ -458,7 +470,7 @@ PROMPT;
     {
         $agent = new Agent($this->platform, $this->model);
         $history = $this->getConversationHistory($chatId);
-        $prompt = self::QUESTION_SYSTEM_PROMPT;
+        $prompt = self::QUESTION_SYSTEM_PROMPT . "\n\n" . $this->getQuotationDateInstruction();
 
         $this->logger->info('[ChatToolPdfMessageProcessor] Consultando historial para pregunta sin adjunto.', [
             'chat_id' => $chatId,
@@ -485,6 +497,7 @@ PROMPT;
         if ($contentArray !== null && !empty($contentArray['quotation'])) {
             $this->logger->info('[ChatToolPdfMessageProcessor] Modificación detectada. Iniciando generación de HTML (Paso 2).');
 
+            $this->validateQuotationForHtml($contentArray['quotation']);
             $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation'], $question);
             $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
@@ -545,28 +558,113 @@ PROMPT;
     }
 
     /**
+     * Valida los tipos críticos antes de entregarlos al generador HTML.
+     *
+     * @param array<string, mixed> $quotation
+     */
+    private function validateQuotationForHtml(array $quotation): void
+    {
+        foreach (['issuer', 'client', 'commercial_terms', 'items'] as $field) {
+            if (!is_array($quotation[$field] ?? null)) {
+                throw new \RuntimeException(sprintf(
+                    'La cotización no contiene una estructura válida en el campo "%s".',
+                    $field,
+                ));
+            }
+        }
+
+        foreach (['subtotal', 'taxes', 'discounts', 'total'] as $field) {
+            if (!is_int($quotation[$field] ?? null) && !is_float($quotation[$field] ?? null)) {
+                throw new \RuntimeException(sprintf(
+                    'El campo numérico "%s" de la cotización no es válido.',
+                    $field,
+                ));
+            }
+        }
+
+        $itemNumericFields = [
+            'quantity',
+            'unit_price',
+            'discount_percentage',
+            'tax_percentage',
+            'subtotal',
+            'total',
+        ];
+
+        foreach ($quotation['items'] as $itemIndex => $item) {
+            if (!is_array($item)) {
+                throw new \RuntimeException(sprintf(
+                    'El ítem %d de la cotización no tiene una estructura válida.',
+                    $itemIndex + 1,
+                ));
+            }
+
+            foreach ($itemNumericFields as $field) {
+                if (!is_int($item[$field] ?? null) && !is_float($item[$field] ?? null)) {
+                    throw new \RuntimeException(sprintf(
+                        'El campo numérico "%s" del ítem %d no es válido.',
+                        $field,
+                        $itemIndex + 1,
+                    ));
+                }
+            }
+        }
+    }
+
+    private function getQuotationDateInstruction(): string
+    {
+        $currentDate = new \DateTimeImmutable('now', new \DateTimeZone('America/Bogota'));
+
+        return sprintf(
+            'Contexto temporal para la cotización: fecha actual %s. Si el usuario no especifica una fecha o vigencia, usa esta fecha y calcula una vigencia estándar de 15 días. Si el usuario especifica una fecha o un plazo, respétalo. Debes registrar los valores resultantes en date y valid_until del JSON. No inventes fechas.',
+            $currentDate->format('Y-m-d'),
+        );
+    }
+
+    /**
      * @param array<int, string> $imagePaths
      */
     private function callOpenAiWithImages(string $question, array $imagePaths, string $chatId): string
     {
         $agent = new Agent($this->platform, $this->model);
+        $history = $this->getConversationHistory($chatId);
         $imageAnalyses = [];
+        $maxImageAnalyses = max(1, $this->maxImageAnalyses);
+        $imagesToAnalyze = array_slice($imagePaths, 0, $maxImageAnalyses);
 
-        foreach ($imagePaths as $index => $path) {
+        if (count($imagePaths) > count($imagesToAnalyze)) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] Se limitó la cantidad de imágenes analizadas para proteger los límites de la API.', [
+                'chat_id' => $chatId,
+                'total_images' => count($imagePaths),
+                'analyzed_images' => count($imagesToAnalyze),
+                'omitted_images' => count($imagePaths) - count($imagesToAnalyze),
+            ]);
+        }
+
+        $this->logger->info('[ChatToolPdfMessageProcessor] Preparando análisis consolidado con historial.', [
+            'chat_id' => $chatId,
+            'history_messages' => count($history),
+            'images' => count($imagesToAnalyze),
+        ]);
+
+        foreach ($imagesToAnalyze as $index => $path) {
             $imageNumber = $index + 1;
             $imageMessage = new UserMessage(
                 new Text(sprintf(
-                    "Analiza la imagen %d  para esta solicitud: %s",
+                    "Analiza la imagen %d para esta solicitud: %s",
                     $imageNumber,
                     $question !== '' ? $question : self::DEFAULT_USER_QUESTION,
                 )),
                 Image::fromFile($path),
             );
 
-            $imageResponse = $agent->call(new MessageBag(
-                new SystemMessage(self::IMAGE_ANALYSIS_SYSTEM_PROMPT),
+            $imageMessages = $this->buildMessagesWithHistory(
+                $chatId,
                 $imageMessage,
-            ));
+                self::IMAGE_ANALYSIS_SYSTEM_PROMPT,
+                $history,
+            );
+            $imageResponse = $agent->call(new MessageBag(...$imageMessages));
             $imageAnalysis = trim((string) $imageResponse->getContent());
 
             if ($imageAnalysis === '') {
@@ -577,9 +675,26 @@ PROMPT;
                 continue;
             }
 
+            $structuredAnalysis = $this->decodeJsonContent($imageAnalysis);
+            if (!is_array($structuredAnalysis)) {
+                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA no devolvió JSON válido para una imagen; se conservará un resumen de respaldo.', [
+                    'chat_id' => $chatId,
+                    'image_number' => $imageNumber,
+                ]);
+                $structuredAnalysis = [
+                    'summary' => $imageAnalysis,
+                    'spaces' => [],
+                    'measurements' => [],
+                    'materials' => [],
+                    'quantities' => [],
+                    'installations' => [],
+                    'notes' => 'La respuesta intermedia no llegó en JSON válido.',
+                ];
+            }
+
             $imageAnalyses[] = [
                 'image_number' => $imageNumber,
-                'analysis' => $imageAnalysis,
+                'analysis' => $structuredAnalysis,
             ];
         }
 
@@ -600,7 +715,8 @@ PROMPT;
         $messages = $this->buildMessagesWithHistory(
             $chatId,
             new UserMessage(new Text($finalPrompt)),
-            self::SYSTEM_PROMPT,
+            self::SYSTEM_PROMPT . "\n\n" . $this->getQuotationDateInstruction(),
+            $history,
         );
 
         $response = $agent->call(new MessageBag(...$messages));
@@ -612,6 +728,7 @@ PROMPT;
             throw new \RuntimeException('La respuesta de OpenAI no devolvio una estructura de cotizacion valida.');
         }
 
+        $this->validateQuotationForHtml($contentArray['quotation']);
         $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando generación de HTML (Paso 2).');
         $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation'], $question);
 
@@ -840,8 +957,13 @@ PROMPT;
         $message = trim((string) ($content['message'] ?? ''));
         $quotation = $this->normalizeQuotationContent($content['quotation'] ?? null);
 
-        if ($message === '' || $quotation === null) {
+        if ($quotation === null) {
             return null;
+        }
+
+        if ($message === '') {
+            $message = self::DEFAULT_QUOTATION_MESSAGE;
+            $this->logger->warning('[ChatToolPdfMessageProcessor] La respuesta estructurada no incluía message; se aplicó un valor predeterminado.');
         }
 
         return [

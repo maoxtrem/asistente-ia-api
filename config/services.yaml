@@ -32,6 +32,7 @@ parameters:
     app.chattoolpdf_service_host: "%env(string:CHATTOOLPDF_SERVICE_HOST)%"
     app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
     app.chattoolpdf_max_history_messages: "%env(int:CHATTOOLPDF_MAX_HISTORY_MESSAGES)%"
+    app.chattoolpdf_max_image_analyses: "%env(int:CHATTOOLPDF_MAX_IMAGE_ANALYSES)%"
     app.stirling_pdf_endpoint: "%env(string:STIRLING_PDF_ENDPOINT)%"
     app.gotenberg_endpoint: "%env(string:GOTENBERG_ENDPOINT)%"
     app.tika_url: "%env(string:TIKA_URL)%"
@@ -141,6 +142,7 @@ services:
         arguments:
             $model: "%app.chattoolpdf_model%"
             $maxHistoryMessages: "%app.chattoolpdf_max_history_messages%"
+            $maxImageAnalyses: "%app.chattoolpdf_max_image_analyses%"
             $stirlingEndpoint: "%app.stirling_pdf_endpoint%"
             $gotenbergEndpoint: "%app.gotenberg_endpoint%"
 
