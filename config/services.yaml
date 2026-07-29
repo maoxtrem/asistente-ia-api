@@ -22,8 +22,6 @@ parameters:
     app.canvas_image_quality: "%env(string:CANVAS_IMAGE_QUALITY)%"
     app.canvas_image_output_format: "%env(string:CANVAS_IMAGE_OUTPUT_FORMAT)%"
     app.canvas_image_background: "%env(string:CANVAS_IMAGE_BACKGROUND)%"
-    app.canvas_minio_bucket: "%env(string:MINIO_BUCKET_CANVAS_IMAGE)%"
-    app.minio_url_expiration_hours: "%env(int:MINIO_URL_EXPIRATION_HOURS)%"
     app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
     app.chattoolpdf_max_history_messages: "%env(int:CHATTOOLPDF_MAX_HISTORY_MESSAGES)%"
     app.chattoolpdf_max_image_analyses: "%env(int:CHATTOOLPDF_MAX_IMAGE_ANALYSES)%"

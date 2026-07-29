@@ -5,17 +5,25 @@ flysystem:
             adapter: 'local'
             options:
                 directory: '%kernel.project_dir%/var/storage/default'
-        # Tu nuevo almacenamiento en MinIO
-        planos.storage:
+        # Storage para el PDF adjunto de entrada del flujo ChatToolPdf
+        chattoolpdf.storage.attach_pdf:
             adapter: 'aws'
             options:
                 client: 'Aws\S3\S3Client'
-                bucket: '%env(MINIO_BUCKET_NAME)%'
-                prefix: '' # Puedes poner 'entradas' si quieres que todo caiga en una carpeta específica
+                bucket: '%env(MINIO_BUCKET_CHATTOOLPDF_ATTACH_PDF)%'
+                prefix: ''
 
-        planos.storage.images:
+        # Storage para el ZIP generado por el flujo ChatToolPdf
+        chattoolpdf.storage.zip:
             adapter: 'aws'
             options:
                 client: 'Aws\S3\S3Client'
-                bucket: '%env(MINIO_BUCKET_NAME_IMAGE)%'
-                prefix: '' # Puedes poner 'entradas' si quieres que todo caiga en una carpeta específica
+                bucket: '%env(MINIO_BUCKET_CHATTOOLPDF_ZIP)%'
+                prefix: ''
+
+        canvas.storage.images:
+            adapter: 'aws'
+            options:
+                client: 'Aws\S3\S3Client'
+                bucket: '%env(MINIO_BUCKET_CANVAS_IMAGE)%'
+                prefix: ''

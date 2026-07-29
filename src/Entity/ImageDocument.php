@@ -46,8 +46,8 @@ class ImageDocument
     #[ORM\Column(name: 'object_key', length: 255, unique: true)]
     private string $objectKey;
 
-    #[ORM\Column(length: 100)]
-    private string $bucket;
+    #[ORM\Column(name: 'bucket', length: 100)]
+    private string $storageBucket;
 
     #[ORM\Column(length: 20)]
     private string $status = 'pending';
@@ -74,7 +74,7 @@ class ImageDocument
         ?string $imageFileName,
         array $requestPayload,
         string $objectKey,
-        string $bucket,
+        string $storageBucket,
     ) {
         $now = new \DateTimeImmutable();
 
@@ -87,7 +87,7 @@ class ImageDocument
         $this->imageFileName = $imageFileName;
         $this->requestPayload = $requestPayload;
         $this->objectKey = $objectKey;
-        $this->bucket = $bucket;
+        $this->storageBucket = $storageBucket;
         $this->createdAt = $now;
         $this->updatedAt = $now;
     }
@@ -184,9 +184,9 @@ class ImageDocument
         $this->objectKey = $objectKey;
     }
 
-    public function getBucket(): string
+    public function getStorageBucket(): string
     {
-        return $this->bucket;
+        return $this->storageBucket;
     }
 
     public function getStatus(): string

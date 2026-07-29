@@ -6,24 +6,26 @@ namespace App\Service\Canvas;
 
 use App\Entity\ImageDocument;
 use App\Repository\ImageDocumentRepository;
-use Aws\Exception\AwsException;
 use Aws\S3\S3Client;
 use Doctrine\ORM\EntityManagerInterface;
+use League\Flysystem\FilesystemOperator;
 use RuntimeException;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 final class CanvasImageStorage
 {
+    private const STORAGE_NAME = 'canvas.storage.images';
+
     public function __construct(
         private readonly ImageDocumentRepository $imageDocumentRepository,
         private readonly EntityManagerInterface $entityManager,
-        #[Autowire(service: 'aws.s3.minio_internal_client')]
-        private readonly S3Client $minioInternalClient,
+        #[Autowire(service: self::STORAGE_NAME)]
+        private readonly FilesystemOperator $canvasStorage,
         #[Autowire(service: 'aws.s3.minio_public_client')]
         private readonly S3Client $minioPublicClient,
-        #[Autowire('%app.canvas_minio_bucket%')]
+        #[Autowire('%env(string:MINIO_BUCKET_CANVAS_IMAGE)%')]
         private readonly string $imageBucket,
-        #[Autowire('%app.minio_url_expiration_hours%')]
+        #[Autowire('%env(int:MINIO_URL_EXPIRATION_HOURS)%')]
         private readonly int $minioUrlExpirationHours,
     ) {
     }
@@ -232,28 +234,16 @@ final class CanvasImageStorage
         $content = $imageData['stream'];
 
         try {
-            $this->minioInternalClient->putObject([
-                'Bucket' => $document->getBucket(),
-                'Key' => $objectKey,
-                'Body' => $content,
-                'ContentType' => $imageData['mime_type'],
-                'Metadata' => [
-                    'reference' => $document->getReference(),
-                    'uuid' => $document->getUuid(),
-                    'tenant' => $document->getTenant(),
-                    'usuario' => $document->getUsuario(),
-                    'entorno' => $document->getEntorno(),
-                    'file_name' => (string) ($imageData['file_name'] ?? ''),
-                    'status' => 'stored',
-                ],
+            $this->canvasStorage->writeStream($objectKey, $content, [
+                'mimetype' => $imageData['mime_type'],
             ]);
-        } catch (AwsException $exception) {
+        } catch (\Throwable $exception) {
             if (is_resource($content)) {
                 fclose($content);
             }
 
             return $this->errorResponse(502, 'No fue posible guardar la imagen en MinIO.', $payload, [
-                'details' => $exception->getAwsErrorMessage() ?: $exception->getMessage(),
+                'details' => $exception->getMessage(),
             ]);
         }
 
@@ -445,26 +435,23 @@ final class CanvasImageStorage
             'image_file_name' => $document->getImageFileName(),
             'image_mime_type' => $document->getImageMimeType(),
             'object_key' => $document->getObjectKey(),
-            'image_url' => $this->temporaryObjectUrl(
-                $document->getBucket(),
-                $document->getObjectKey(),
-                $this->minioUrlExpirationHours
-            ),
-            'image_url_expires_in_hours' => $this->minioUrlExpirationHours,
+            'image_url' => $this->temporaryObjectUrl($document->getStorageBucket(), $document->getObjectKey()),
+            'image_url_expires_in_hours' => max(1, $this->minioUrlExpirationHours),
         ];
     }
 
-    private function temporaryObjectUrl(string $bucket, string $objectKey, int $expiresInHours): string
+    private function temporaryObjectUrl(string $bucket, string $objectKey): string
     {
-        $bucketName = $bucket !== '' ? $bucket : $this->imageBucket;
-        $expiresInSeconds = max(1, $expiresInHours) * 3600;
-
+        $expiresInSeconds = max(1, $this->minioUrlExpirationHours) * 3600;
         $command = $this->minioPublicClient->getCommand('GetObject', [
-            'Bucket' => $bucketName,
+            'Bucket' => $bucket !== '' ? $bucket : $this->imageBucket,
             'Key' => $objectKey,
         ]);
 
-        $request = $this->minioPublicClient->createPresignedRequest($command, sprintf('+%d seconds', $expiresInSeconds));
+        $request = $this->minioPublicClient->createPresignedRequest(
+            $command,
+            sprintf('+%d seconds', $expiresInSeconds)
+        );
 
         return (string) $request->getUri();
     }

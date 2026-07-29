@@ -96,10 +96,10 @@ final readonly class ChatToolPdfMessageProcessor
         private PromptLoader $promptLoader,
         #[Autowire(service: 'ai.traceable_platform.openai')]
         private PlatformInterface $platform,
-        #[Autowire(service: 'planos.storage')]
-        private FilesystemOperator $planosStorage,
-        #[Autowire(service: 'planos.storage.images')]
-        private FilesystemOperator $planosImagesStorage,
+        #[Autowire(service: 'chattoolpdf.storage.attach_pdf')]
+        private FilesystemOperator $attachPdfStorage,
+        #[Autowire(service: 'chattoolpdf.storage.zip')]
+        private FilesystemOperator $chattoolpdfZipStorage,
     ) {}
 
     public function process(ChatToolPdfMessage $message): void
@@ -134,7 +134,7 @@ final readonly class ChatToolPdfMessageProcessor
                     default => $this->answerConversation($userText, $chatId, $history),
                 };
             } else {
-                if (!$this->planosStorage->fileExists($resolvedAttachmentPath)) {
+                if (!$this->attachPdfStorage->fileExists($resolvedAttachmentPath)) {
                     $this->logger->error('[ChatToolPdfMessageProcessor] El archivo no existe en storage.', [
                         'attachment_path' => $resolvedAttachmentPath,
                         'chat_id' => $message->getChatId(),
@@ -381,10 +381,10 @@ final readonly class ChatToolPdfMessageProcessor
                 ));
             }
 
-            // Se guarda como los adjuntos: en planos.storage y se conserva
+            // Se guarda como los adjuntos: en chattoolpdf.storage.attach_pdf y se conserva
             // la clave del objeto, no una URL interna del contenedor.
             $pdfPath = bin2hex(random_bytes(32)) . '.pdf';
-            $this->planosStorage->write(
+            $this->attachPdfStorage->write(
                 $pdfPath,
                 $response->getContent(),
                 ['visibility' => 'public'],
@@ -880,7 +880,7 @@ final readonly class ChatToolPdfMessageProcessor
 
     private function convertAndStorePdf(string $attachmentPath, ChatToolPdfMessage $message): string
     {
-        $pdfBinary = $this->planosStorage->read($attachmentPath);
+        $pdfBinary = $this->attachPdfStorage->read($attachmentPath);
         $tempPdfPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . uniqid('pdf_to_convert_', true) . '.pdf';
 
         if (file_put_contents($tempPdfPath, $pdfBinary) === false) {
@@ -910,7 +910,7 @@ final readonly class ChatToolPdfMessageProcessor
             $zipBinaryContent = $response->getContent();
             $zipPath = $this->buildZipPath($attachmentPath);
 
-            $this->planosImagesStorage->write($zipPath, $zipBinaryContent);
+            $this->chattoolpdfZipStorage->write($zipPath, $zipBinaryContent);
 
             $loger = new Loger($zipPath, $message->getCreatedAt());
             $this->entityManager->persist($loger);
