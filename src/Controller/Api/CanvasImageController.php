@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\Service\ChatToolPdf\PdfImageClient;
+use App\Service\Canvas\PdfImageClient;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;

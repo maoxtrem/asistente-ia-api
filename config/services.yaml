@@ -27,9 +27,8 @@ parameters:
     app.openai_image_quality: "%env(string:OPENAI_IMAGE_QUALITY)%"
     app.openai_image_output_format: "%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%"
     app.openai_image_background: "%env(string:OPENAI_IMAGE_BACKGROUND)%"
-    app.chattoolpdf_environment: "%env(string:CHATTOOLPDF_ENVIRONMENT)%"
-    app.chattoolpdf_service_url: "%env(string:CHATTOOLPDF_SERVICE_URL)%"
-    app.chattoolpdf_service_host: "%env(string:CHATTOOLPDF_SERVICE_HOST)%"
+    app.canvas_service_url: "%env(string:CANVAS_SERVICE_URL)%"
+    app.canvas_service_host: "%env(string:CANVAS_SERVICE_HOST)%"
     app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
     app.chattoolpdf_max_history_messages: "%env(int:CHATTOOLPDF_MAX_HISTORY_MESSAGES)%"
     app.chattoolpdf_max_image_analyses: "%env(int:CHATTOOLPDF_MAX_IMAGE_ANALYSES)%"
@@ -133,22 +132,10 @@ services:
         arguments:
             $qdrantCollection: "%app.chat_qdrant_collection%"
 
-    App\Service\ChatToolPdf\PdfImageClient:
+    App\Service\Canvas\PdfImageClient:
         arguments:
-            $servicePdfUrl: "%app.chattoolpdf_service_url%"
-            $servicePdfHost: "%app.chattoolpdf_service_host%"
-
-    App\Service\ChatToolPdf\ChatToolPdfMessageProcessor:
-        arguments:
-            $model: "%app.chattoolpdf_model%"
-            $maxHistoryMessages: "%app.chattoolpdf_max_history_messages%"
-            $maxImageAnalyses: "%app.chattoolpdf_max_image_analyses%"
-            $stirlingEndpoint: "%app.stirling_pdf_endpoint%"
-            $gotenbergEndpoint: "%app.gotenberg_endpoint%"
-
-    App\Service\ChatToolPdf\TikaTextExtractor:
-        arguments:
-            $tikaUrl: "%app.tika_url%"
+            $servicePdfUrl: "%app.canvas_service_url%"
+            $servicePdfHost: "%app.canvas_service_host%"
 
     App\Service\Canvas\CanvasGenerationService:
         arguments:
@@ -158,16 +145,6 @@ services:
         arguments:
             $maxHistoryItems: "%app.chat_prompt_max_history_items%"
             $assistantName: "%app.assistant_name%"
-
-    App\Controller\Api\ChatToolPdfController:
-        arguments:
-            $assistantName: "%app.assistant_name%"
-            $chattoolpdfEnvironment: "%app.chattoolpdf_environment%"
-
-    App\Service\ChatToolPdf\PdfClient:
-        arguments:
-            $servicePdfUrl: "%app.chattoolpdf_service_url%"
-            $servicePdfHost: "%app.chattoolpdf_service_host%"
 
     App\Controller\Api\BootstrapController:
         arguments:

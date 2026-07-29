@@ -89,6 +89,65 @@ final readonly class ChatContextRetriever
         ], $messages);
     }
 
+    public function getLatestContentBySessionAndRole(string $chatId, string $role, int $limit = 50): ?string
+    {
+        $chatId = trim($chatId);
+        $role = trim($role);
+
+        if ($chatId === '' || $role === '' || $limit < 1) {
+            return null;
+        }
+
+        $filter = new Filter();
+        $filter->addMust(new MatchString('session_id', $chatId));
+
+        $request = new ScrollRequest();
+        $request
+            ->setFilter($filter)
+            ->setLimit($limit)
+            ->setWithPayload(true)
+            ->setWithVector(false);
+
+        $response = $this->qdrant
+            ->collections($this->collectionName)
+            ->points()
+            ->scroll($request);
+
+        $points = $response['result']['points'] ?? [];
+        if (!is_array($points)) {
+            return null;
+        }
+
+        $latestContent = null;
+        $latestTimestamp = PHP_INT_MIN;
+
+        foreach ($points as $point) {
+            if (!is_array($point) || !is_array($point['payload'] ?? null)) {
+                continue;
+            }
+
+            $payload = $point['payload'];
+            if (trim((string) ($payload['role'] ?? '')) !== $role) {
+                continue;
+            }
+
+            $timestamp = (int) ($payload['timestamp'] ?? 0);
+            if ($timestamp < $latestTimestamp) {
+                continue;
+            }
+
+            $content = trim((string) ($payload['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+
+            $latestTimestamp = $timestamp;
+            $latestContent = $content;
+        }
+
+        return $latestContent;
+    }
+
     /**
      * Guarda un mensaje en el historial de Qdrant.
      *

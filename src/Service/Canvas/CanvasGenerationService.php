@@ -8,7 +8,7 @@ use App\DTO\CanvasGenerationRequest;
 use App\DTO\CanvasGenerationResponse;
 use App\Service\Ai\Chat\CanvasImagePromptBuilder;
 use App\Service\Ai\Image\OpenAiImageGenerationProvider;
-use App\Service\ChatToolPdf\PdfImageClient;
+use App\Service\Canvas\PdfImageClient;
 use Throwable;
 
 final class CanvasGenerationService

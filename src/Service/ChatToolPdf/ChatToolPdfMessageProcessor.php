@@ -23,267 +23,77 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 use Symfony\Component\Messenger\MessageBusInterface;
+use App\Service\Prompt\PromptLoader;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final readonly class ChatToolPdfMessageProcessor
 {
-    private const QUESTION_SYSTEM_PROMPT = 'Responde como un asistente conversacional en el mismo idioma del usuario. Usa el historial proporcionado como contexto y determina por la intención de la pregunta actual si el usuario está editando una cotización anterior.
-
-Si la pregunta solicita modificar, actualizar, corregir o recalcular una cotización del historial, devuelve EXCLUSIVAMENTE un JSON válido (puedes usar un bloque de markdown ```json o texto plano directo del JSON, sin texto introductorio ni despedidas) con los cambios aplicados, conservando de forma estricta las claves "message" y "quotation" con la siguiente estructura exacta:
-{
-  "message": "string",
-  "quotation": {
-    "quotation_number": "string",
-    "status": "string",
-    "date": "string",
-    "valid_until": "string",
-    "currency": "string",
-    "issuer": {
-      "legal_name": "string",
-      "tax_id": "string",
-      "address": "string",
-      "city": "string",
-      "country": "string",
-      "email": "string",
-      "phone": "string"
-    },
-    "client": {
-      "legal_name": "string",
-      "tax_id": "string",
-      "contact_person": "string",
-      "address": "string",
-      "city": "string",
-      "country": "string",
-      "email": "string",
-      "phone": "string"
-    },
-    "commercial_terms": {
-      "payment_method": "string",
-      "payment_terms": "string",
-      "delivery_time": "string",
-      "warranty": "string"
-    },
-    "items": [
-      {
-        "item_id": "string",
-        "description": "string",
-        "quantity": 0,
-        "unit_price": 0,
-        "discount_percentage": 0,
-        "tax_percentage": 0,
-        "subtotal": 0,
-        "total": 0
-      }
-    ],
-    "subtotal": 0,
-    "taxes": 0,
-    "discounts": 0,
-    "total": 0,
-    "notes": "string"
-  }
-}
-
-Si la pregunta no solicita una edición de la cotización, responde únicamente con texto conversacional claro y breve; no devuelvas JSON. No inventes información ni crees una cotización nueva cuando no exista una cotización relacionada en el historial.';
-    private const SYSTEM_PROMPT = 'Eres un experto estimador de obra. Tu tarea es analizar planos arquitectónicos y generar cotizaciones en formato JSON.
-PASOS OBLIGATORIOS:
-1. Analiza el mensaje del usuario para extraer precios, tarifas o materiales si los menciona.
-2. Analiza el plano adjunto para identificar áreas, elementos y cantidades lógicas.
-3. Si faltan precios, usa supuestos razonables y explícitalos dentro de notes.
-4. Nunca respondas con negativa, evasiva o texto fuera del JSON.
-5. Responde SOLO en JSON válido conservando exactamente esta estructura:
-{
-  "message": "string",
-  "quotation": {
-    "quotation_number": "string",
-    "status": "string",
-    "date": "string",
-    "valid_until": "string",
-    "currency": "string",
-    "issuer": {
-      "legal_name": "string",
-      "tax_id": "string",
-      "address": "string",
-      "city": "string",
-      "country": "string",
-      "email": "string",
-      "phone": "string"
-    },
-    "client": {
-      "legal_name": "string",
-      "tax_id": "string",
-      "contact_person": "string",
-      "address": "string",
-      "city": "string",
-      "country": "string",
-      "email": "string",
-      "phone": "string"
-    },
-    "commercial_terms": {
-      "payment_method": "string",
-      "payment_terms": "string",
-      "delivery_time": "string",
-      "warranty": "string"
-    },
-    "items": [
-      {
-        "item_id": "string",
-        "description": "string",
-        "quantity": 0,
-        "unit_price": 0,
-        "discount_percentage": 0,
-        "tax_percentage": 0,
-        "subtotal": 0,
-        "total": 0
-      }
-    ],
-    "subtotal": 0,
-    "taxes": 0,
-    "discounts": 0,
-    "total": 0,
-    "notes": "string"
-  }
-}
-6. El campo message debe resumir el resultado del análisis y la intención de la cotización.
-7. El campo quotation no debe ser null. Si hay poca información, completa con estimaciones conservadoras y acláralo en notes.';
-    private const IMAGE_ANALYSIS_SYSTEM_PROMPT = 'Eres un analista experto de planos arquitectónicos y cotizaciones.
-    Analiza exclusivamente la imagen adjunta y devuelve la información técnica visible en esta imagen.
-    No inventes datos que no sean visibles; indica claramente cuando una estimación no sea posible. Responde en el mismo idioma del usuario.
-    En esta etapa no generes la cotización final, no devuelvas el JSON de quotation y no combines información de otras imágenes.
-    Responde ÚNICAMENTE con un JSON válido, sin texto introductorio ni bloques Markdown, usando exactamente esta estructura:
-    {
-      "summary": "resumen técnico de la imagen",
-      "spaces": [],
-      "measurements": [],
-      "materials": [],
-      "quantities": [],
-      "installations": [],
-      "notes": "limitaciones o datos no visibles"
-    }';
+    private const INTENT_CONVERSATION = 'conversation';
+    private const INTENT_ANALYZE_DOCUMENT = 'analyze_document';
+    private const INTENT_CREATE_QUOTATION = 'create_quotation';
+    private const INTENT_EDIT_QUOTATION = 'edit_quotation';
+    private const INTENT_RENDER_QUOTATION = 'render_quotation';
+    private const DEFAULT_CONVERSATION_QUESTION = '¿En qué aspecto de la cotización necesitas ayuda?';
+    private const DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION = 'Genera una cotización a partir del documento adjunto. Usa moneda COP y limita los supuestos a precios o tarifas, identificándolos en las notas.';
     private const DEFAULT_QUOTATION_MESSAGE = 'Cotización generada a partir de la información disponible.';
-    private const DEFAULT_USER_QUESTION = 'Por favor, genérame una cotización a partir de este plano. Usa moneda COP como estándar, analiza cada detalle posible del plano y estima valores razonables si faltan datos.';
-    private const HTML_SKELETON_PROMPT = <<<PROMPT
-Eres un desarrollador frontend experto en disenio. Tu única tarea es tomar los datos de la cotización proporcionada y mapearlos dentro de este esqueleto HTML si el usuario pide cambiar el disenio lo cambias con css nativo puedes modificar los valores de las etiquetas para dar un aspecto mas profecional.
 
-REGLAS OBLIGATORIAS:
-1. Inyecta los datos en los marcadores (ej. [QUOTATION_NUMBER]). Genera una fila <tr> por cada ítem.
-2. Usa el CSS proporcionado como base, pero puedes modificar colores, tipografías, espaciados, bordes, fondos y cualquier otro estilo cuando la instrucción del usuario lo solicite. La instrucción del usuario tiene prioridad sobre los valores visuales del esqueleto.
-3. Mantén la estructura de <!DOCTYPE html>, <html>, <head> y <body>.
-4. Si el usuario especifica una fecha, plazo, validez o vigencia, respétalos. Si no menciona nada sobre fechas, usa la fecha actual y una vigencia predeterminada de 15 días indicadas en la solicitud.
-5. RESPONDE ÚNICAMENTE CON EL CÓDIGO HTML FINAL. No incluyas explicaciones ni bloques de Markdown.
+    private function loadPrompt(string $promptName): string
+    {
+        return $this->promptLoader->load('chattoolpdf/' . $promptName);
+    }
 
-ESQUELETO HTML BASE:
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Cotización</title>
-    <style>
-        body { font-family: Arial, sans-serif; background-color: #f3f4f6; color: #374151; padding: 20px; margin: 0; }
-        .container { max-width: 900px; margin: 0 auto; background-color: #ffffff; padding: 40px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; }
-        header { display: table; width: 100%; border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px; }
-        .header-left { display: table-cell; vertical-align: top; }
-        .header-right { display: table-cell; vertical-align: top; text-align: right; }
-        h1 { font-size: 28px; font-weight: bold; text-transform: uppercase; color: #111827; margin: 0; }
-        .text-sm { font-size: 14px; margin: 4px 0; color: #4b5563; }
-        .mb-8 { margin-bottom: 30px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; }
-        th { background-color: #1f2937; color: white; padding: 12px; text-align: left; }
-        th.text-center, td.text-center { text-align: center; }
-        th.text-right, td.text-right { text-align: right; }
-        td { padding: 12px; border-bottom: 1px solid #e5e7eb; }
-        tr:nth-child(even) { background-color: #f9fafb; }
-        .totales-box { width: 300px; float: right; background-color: #f9fafb; padding: 15px; border: 1px solid #e5e7eb; border-radius: 5px; }
-        .totales-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
-        .total-final { font-size: 18px; font-weight: bold; border-top: 1px solid #d1d5db; padding-top: 10px; margin-top: 10px; color: #111827; }
-        .clearfix::after { content: ""; clear: both; display: table; }
-        footer { border-top: 2px solid #e5e7eb; padding-top: 20px; font-size: 14px; color: #4b5563; clear: both; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- Encabezado -->
-        <header>
-            <div class="header-left">
-                <h1>Cotización</h1>
-                <p style="font-size: 18px; font-weight: bold; margin: 15px 0 5px; color: #111827;">[LEGAL_NAME_EMISOR]</p>
-                <p class="text-sm">NIT: [TAX_ID_EMISOR]</p>
-                <p class="text-sm">[EMAIL_EMISOR] | [PHONE_EMISOR]</p>
-            </div>
-            <div class="header-right">
-                <p class="text-sm" style="font-weight: bold; text-transform: uppercase;">Número</p>
-                <p style="font-size: 20px; font-weight: bold; margin: 5px 0; color: #111827;">[QUOTATION_NUMBER]</p>
-                <p class="text-sm">Fecha: [DATE]</p>
-                <p class="text-sm">Válida hasta: [VALID_UNTIL]</p>
-            </div>
-        </header>
+    private function getConversationSystemPrompt(): string
+    {
+        return $this->loadPrompt('conversation_system_prompt.md');
+    }
 
-        <!-- Cliente -->
-        <section class="mb-8">
-            <h2 style="font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; color: #6b7280;">Cotizado a:</h2>
-            <p style="font-size: 16px; font-weight: bold; margin: 10px 0 5px; color: #111827;">[LEGAL_NAME_CLIENTE]</p>
-            <p class="text-sm">Atención: [CONTACT_PERSON_CLIENTE]</p>
-            <p class="text-sm">NIT: [TAX_ID_CLIENTE]</p>
-            <p class="text-sm">[ADDRESS_CLIENTE], [CITY_CLIENTE]</p>
-        </section>
+    private function getDocumentSummarySystemPrompt(): string
+    {
+        return $this->loadPrompt('document_summary_system_prompt.md');
+    }
 
-        <!-- Tabla de Ítems -->
-        <section class="mb-8">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Descripción</th>
-                        <th class="text-center">Cant.</th>
-                        <th class="text-right">Precio Unit.</th>
-                        <th class="text-right">Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <!-- LA IA DEBE GENERAR LOS <tr> AQUÍ BASADO EN LOS ITEMS DEL JSON -->
-                    <tr>
-                        <td>[ITEM_DESCRIPTION]</td>
-                        <td class="text-center">[ITEM_QUANTITY]</td>
-                        <td class="text-right">[ITEM_UNIT_PRICE]</td>
-                        <td class="text-right" style="font-weight: bold;">[ITEM_TOTAL]</td>
-                    </tr>
-                </tbody>
-            </table>
-        </section>
+    private function getQuotationConsolidationSystemPrompt(): string
+    {
+        return $this->loadPrompt('quotation_consolidation_system_prompt.md');
+    }
 
-        <!-- Totales -->
-        <section class="mb-8 clearfix">
-            <div class="totales-box">
-                <div class="totales-row"><span>Subtotal:</span> <span>[SUBTOTAL]</span></div>
-                <div class="totales-row"><span>Impuestos:</span> <span>[TAXES]</span></div>
-                <div class="totales-row"><span>Descuentos:</span> <span>[DISCOUNTS]</span></div>
-                <div class="totales-row total-final">
-                    <span>Total:</span>
-                    <span>[TOTAL]</span>
-                </div>
-            </div>
-        </section>
+    private function getQuestionSystemPrompt(): string
+    {
+        return $this->loadPrompt('question_system_prompt.md');
+    }
 
-        <!-- Notas -->
-        <footer>
-            <h3 style="font-size: 14px; text-transform: uppercase; margin-bottom: 10px; color: #6b7280;">Términos y Notas</h3>
-            <p><strong>Forma de pago:</strong> [PAYMENT_METHOD]</p>
-            <p><strong>Tiempo de entrega:</strong> [DELIVERY_TIME]</p>
-            <p style="margin-top: 15px; white-space: pre-line;">[NOTES]</p>
-        </footer>
-    </div>
-</body>
-</html>
-PROMPT;
+    private function getSystemPrompt(): string
+    {
+        return $this->loadPrompt('system_prompt.md');
+    }
+
+    private function getImageAnalysisSystemPrompt(): string
+    {
+        return $this->loadPrompt('image_analysis_system_prompt.md');
+    }
+
+    private function getHtmlSkeletonPrompt(): string
+    {
+        return $this->loadPrompt('html_skeleton_prompt.md');
+    }
+
     public function __construct(
         private LoggerInterface $logger,
         private MessageBusInterface $messageBus,
         private EntityManagerInterface $entityManager,
         private HttpClientInterface $httpClient,
+        #[Autowire('%app.chattoolpdf_model%')]
         private string $model,
+        #[Autowire('%app.chattoolpdf_max_history_messages%')]
         private int $maxHistoryMessages,
+        #[Autowire('%app.chattoolpdf_max_image_analyses%')]
         private int $maxImageAnalyses,
+        #[Autowire('%app.stirling_pdf_endpoint%')]
         private string $stirlingEndpoint,
+        #[Autowire('%app.gotenberg_endpoint%')]
         private string $gotenbergEndpoint,
         private ChatContextRetriever $chatContextRetriever,
+        private PromptLoader $promptLoader,
         #[Autowire(service: 'ai.traceable_platform.openai')]
         private PlatformInterface $platform,
         #[Autowire(service: 'planos.storage')]
@@ -296,34 +106,60 @@ PROMPT;
     {
         $attachmentPath = $message->getAttachmentKey();
         $chatId = (string) $message->getChatId();
-        $userText = $message->getMessage();
+        $userText = $this->normalizeQuestion($message->getMessage());
         $aiContent = null;
         $pdfUrl = null;
+        $resolvedAttachmentPath = is_string($attachmentPath) && trim($attachmentPath) !== ''
+            ? trim($attachmentPath)
+            : null;
+        $history = $this->getConversationHistory($chatId);
+        $currentQuotation = $this->findLatestQuotation($history);
+        $intent = $this->classifyIntent(
+            $userText,
+            $resolvedAttachmentPath !== null,
+            $currentQuotation !== null,
+        );
 
-        if (!is_string($attachmentPath) || trim($attachmentPath) === '') {
-            $aiContent = $this->answerQuestionOnly($userText, $chatId);
-        } else {
-            $attachmentPath = trim($attachmentPath);
-
-            try {
-                if (!$this->planosStorage->fileExists($attachmentPath)) {
+        try {
+            if ($intent === self::INTENT_RENDER_QUOTATION) {
+                $aiContent = $currentQuotation !== null
+                    ? $this->renderExistingQuotation($currentQuotation, $userText, $chatId)
+                    : 'No existe una cotización previa para volver a generar el PDF.';
+            } elseif ($intent === self::INTENT_CONVERSATION) {
+                $aiContent = $this->answerConversation($userText, $chatId, $history);
+            } elseif ($resolvedAttachmentPath === null) {
+                $aiContent = match ($intent) {
+                    self::INTENT_EDIT_QUOTATION => $this->answerQuestionOnly($userText, $chatId),
+                    self::INTENT_CREATE_QUOTATION => $this->createQuotationFromText($userText, $chatId, $history),
+                    default => $this->answerConversation($userText, $chatId, $history),
+                };
+            } else {
+                if (!$this->planosStorage->fileExists($resolvedAttachmentPath)) {
                     $this->logger->error('[ChatToolPdfMessageProcessor] El archivo no existe en storage.', [
-                        'attachment_path' => $attachmentPath,
+                        'attachment_path' => $resolvedAttachmentPath,
                         'chat_id' => $message->getChatId(),
                     ]);
-
-                    $aiContent = $this->answerQuestionOnly($userText, $chatId);
+                    $aiContent = 'No fue posible procesar el documento adjunto porque el archivo no existe.';
                 } else {
-                    $zipBinaryContent = $this->convertAndStorePdf($attachmentPath, $message);
-                    $aiContent = $this->analyzeZipBinary($zipBinaryContent, $userText, $chatId);
+                    $zipBinaryContent = $this->convertAndStorePdf($resolvedAttachmentPath, $message);
+                    $aiContent = $this->analyzeZipBinary(
+                        $zipBinaryContent,
+                        $userText,
+                        $chatId,
+                        $intent === self::INTENT_ANALYZE_DOCUMENT,
+                    );
                 }
-            } catch (\Throwable $exception) {
-                $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible completar el flujo de IA.', [
-                    'attachment_path' => $attachmentPath,
-                    'chat_id' => $message->getChatId(),
-                    'error' => $exception->getMessage(),
-                ]);
             }
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible completar el flujo de IA.', [
+                'attachment_path' => $resolvedAttachmentPath,
+                'chat_id' => $message->getChatId(),
+                'intent' => $intent,
+                'error' => $exception->getMessage(),
+            ]);
+            $aiContent = $resolvedAttachmentPath !== null
+                ? 'No fue posible procesar el documento adjunto. Verifica que sea un PDF válido e inténtalo nuevamente.'
+                : 'No fue posible procesar la solicitud. Inténtalo nuevamente.';
         }
 
         if ($aiContent !== null && trim($aiContent) !== '') {
@@ -336,12 +172,182 @@ PROMPT;
             $this->saveConversationHistory($chatId, $userText, $aiContent);
         }
 
+        $responseContent = $aiContent !== null ? $this->removeInternalHtml($aiContent) : null;
         $this->dispatchResponse(
             $message,
-            is_string($attachmentPath) && trim($attachmentPath) !== '' ? trim($attachmentPath) : null,
-            $aiContent,
+            $resolvedAttachmentPath,
+            $responseContent,
             $pdfUrl,
         );
+    }
+
+    private function removeInternalHtml(string $content): string
+    {
+        $decoded = json_decode(trim($content), true);
+        if (!is_array($decoded) || !array_key_exists('html', $decoded)) {
+            return $content;
+        }
+
+        unset($decoded['html']);
+        $encoded = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) && $encoded !== '' ? $encoded : $content;
+    }
+
+    private function classifyIntent(string $userText, bool $hasAttachment, bool $hasCurrentQuotation): string
+    {
+        $allowedIntents = [
+            self::INTENT_CONVERSATION,
+            self::INTENT_ANALYZE_DOCUMENT,
+            self::INTENT_CREATE_QUOTATION,
+            self::INTENT_EDIT_QUOTATION,
+            self::INTENT_RENDER_QUOTATION,
+        ];
+        $question = $userText !== '' ? $userText : self::DEFAULT_CONVERSATION_QUESTION;
+        $prompt = sprintf(
+            "Clasifica la intención actual. Responde únicamente JSON: {\"intent\":\"conversation|analyze_document|create_quotation|edit_quotation|render_quotation\"}.\nAdjunto presente: %s\nCotización previa disponible: %s\nMensaje: %s",
+            $hasAttachment ? 'sí' : 'no',
+            $hasCurrentQuotation ? 'sí' : 'no',
+            $question,
+        );
+
+        try {
+            $agent = new Agent($this->platform, $this->model);
+            $response = $agent->call(new MessageBag(
+                new SystemMessage('Clasifica la intención sin responder la solicitud. edit_quotation aplica cuando se modifica cualquier dato de la cotización: fechas, cantidades, precios, impuestos, descuentos, nombres, moneda, términos, ítems o notas. Si una solicitud combina cambios comerciales y visuales, clasifícala siempre como edit_quotation. render_quotation se usa exclusivamente cuando solo cambia diseño, colores, tipografía, encabezado o se regenera el PDF sin alterar ningún dato. analyze_document significa resumir o inspeccionar un archivo sin cotizar.'),
+                new UserMessage(new Text($prompt)),
+            ));
+            $decoded = $this->decodeJsonContent((string) $response->getContent());
+            $intent = is_array($decoded) ? (string) ($decoded['intent'] ?? '') : '';
+            if (in_array($intent, $allowedIntents, true)) {
+                return $intent;
+            }
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] Falló el clasificador de intención; se aplicará una ruta segura.', [
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        if ($hasAttachment) {
+            return preg_match('/\b(resume|resumen|analiza|describe|medidas|páginas|paginas|sin cotizar|no cotización|no cotizacion)\b/iu', $question) === 1
+                ? self::INTENT_ANALYZE_DOCUMENT
+                : self::INTENT_CREATE_QUOTATION;
+        }
+
+        if ($hasCurrentQuotation && preg_match('/\b(fecha|vigencia|plazo|descuento|impuesto|precio|cantidad|cliente|emisor|moneda|término|termino|ítem|item|nota|material|subtotal|total)\b/iu', $question) === 1) {
+            return self::INTENT_EDIT_QUOTATION;
+        }
+
+        if ($hasCurrentQuotation && preg_match('/\b(color|diseño|diseno|estilo|encabezado|tipografía|tipografia|pdf|regenera|renderiza)\b/iu', $question) === 1) {
+            return self::INTENT_RENDER_QUOTATION;
+        }
+
+        return self::INTENT_CONVERSATION;
+    }
+
+    /**
+     * @param array<int, array{role: string, content: string}> $history
+     * @return array<string, mixed>|null
+     */
+    private function findLatestQuotation(array $history): ?array
+    {
+        foreach (array_reverse($history) as $historyMessage) {
+            if (($historyMessage['role'] ?? '') !== 'assistant') {
+                continue;
+            }
+
+            $decoded = $this->decodeJsonContent((string) ($historyMessage['content'] ?? ''));
+            if (!is_array($decoded)) {
+                continue;
+            }
+
+            $quotation = $this->normalizeQuotationContent($decoded['quotation'] ?? null);
+            if ($quotation !== null && $quotation['items'] !== []) {
+                return $quotation;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $quotation
+     */
+    private function renderExistingQuotation(array $quotation, string $designInstruction, string $chatId): string
+    {
+        $this->validateQuotationForHtml($quotation);
+        $content = [
+            'message' => 'Se generó nuevamente el PDF de la cotización sin modificar sus datos comerciales.',
+            'quotation' => $quotation,
+            'html' => $this->callOpenAiQuestionOnlyHtmlSkeleton(
+                $quotation,
+                $designInstruction,
+                $this->getLatestQuotationHtml($chatId),
+            ),
+        ];
+        $encoded = json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($encoded) || $encoded === '') {
+            throw new \RuntimeException('No fue posible serializar la cotización renderizada.');
+        }
+
+        return $encoded;
+    }
+
+    /**
+     * @param array<int, array{role: string, content: string}> $history
+     */
+    private function answerConversation(string $question, string $chatId, array $history): string
+    {
+        $messages = $this->buildMessagesWithHistory(
+            $chatId,
+            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
+            $this->getConversationSystemPrompt(),
+            $history,
+        );
+        $response = (new Agent($this->platform, $this->model))->call(new MessageBag(...$messages));
+        $content = trim((string) $response->getContent());
+
+        if ($content === '') {
+            throw new \RuntimeException('La respuesta conversacional no devolvió contenido.');
+        }
+
+        return $content;
+    }
+
+    /**
+     * @param array<int, array{role: string, content: string}> $history
+     */
+    private function createQuotationFromText(string $question, string $chatId, array $history): string
+    {
+        $prompt = $this->getSystemPrompt()
+            . "\n\nEn esta ruta no hay documento adjunto. Usa únicamente datos aportados por el usuario; no atribuyas información a un plano."
+            . "\n\n" . $this->getQuotationDateInstruction();
+        $messages = $this->buildMessagesWithHistory(
+            $chatId,
+            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
+            $prompt,
+            $history,
+        );
+        $response = (new Agent($this->platform, $this->model))->call(new MessageBag(...$messages));
+        $contentArray = $this->normalizeStructuredContent($response->getContent());
+        if ($contentArray === null) {
+            throw new \RuntimeException('La IA no devolvió una cotización válida a partir del texto.');
+        }
+
+        $this->validateQuotationForHtml($contentArray['quotation']);
+        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
+            $contentArray['quotation'],
+            $question,
+            $this->getLatestQuotationHtml($chatId),
+        );
+        $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($encoded) || $encoded === '') {
+            throw new \RuntimeException('No fue posible serializar la cotización creada por texto.');
+        }
+
+        return $encoded;
     }
 
     private function generateAndStorePdfFromContent(string $content, string $chatId): ?string
@@ -425,7 +431,7 @@ PROMPT;
                 $jsonContent = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 if (is_string($jsonContent) && $jsonContent !== '') {
                     $this->chatContextRetriever->saveMessage($chatId, 'assistant', $jsonContent, $jsonContent);
-                    $this->chatContextRetriever->saveMessage($chatId, 'assistant_html', $html, $html);
+                    $this->chatContextRetriever->saveMessage($chatId, 'assistant_html', $html, $jsonContent);
                 }
             } else {
                 $this->chatContextRetriever->saveMessage($chatId, 'assistant', $aiContent, $aiContent);
@@ -443,16 +449,23 @@ PROMPT;
         return $this->callOpenAiQuestionOnly($this->normalizeQuestion($question), $chatId);
     }
 
-    private function analyzeZipBinary(string $zipBinary, string $question, string $chatId): string
+    private function analyzeZipBinary(string $zipBinary, string $question, string $chatId, bool $analysisOnly): string
     {
         $imagePaths = $this->extractImagesToTempFiles($zipBinary);
 
         try {
             if ([] === $imagePaths) {
-                return $this->answerQuestionOnly($question, $chatId);
+                return $analysisOnly
+                    ? 'No fue posible extraer imágenes legibles del documento adjunto.'
+                    : $this->answerQuestionOnly($question, $chatId);
             }
 
-            return $this->callOpenAiWithImages($this->normalizeQuestion($question), $imagePaths, $chatId);
+            return $this->callOpenAiWithImages(
+                $this->normalizeQuestion($question),
+                $imagePaths,
+                $chatId,
+                $analysisOnly,
+            );
         } finally {
             // Limpieza garantizada de las imágenes temporales
             foreach ($imagePaths as $path) {
@@ -470,7 +483,7 @@ PROMPT;
     {
         $agent = new Agent($this->platform, $this->model);
         $history = $this->getConversationHistory($chatId);
-        $prompt = self::QUESTION_SYSTEM_PROMPT . "\n\n" . $this->getQuotationDateInstruction();
+        $prompt = $this->getQuestionSystemPrompt() . "\n\n" . $this->getQuotationDateInstruction();
 
         $this->logger->info('[ChatToolPdfMessageProcessor] Consultando historial para pregunta sin adjunto.', [
             'chat_id' => $chatId,
@@ -480,7 +493,7 @@ PROMPT;
 
         $messages = $this->buildMessagesWithHistory(
             $chatId,
-            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_USER_QUESTION)),
+            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
             $prompt,
             $history,
         );
@@ -498,7 +511,11 @@ PROMPT;
             $this->logger->info('[ChatToolPdfMessageProcessor] Modificación detectada. Iniciando generación de HTML (Paso 2).');
 
             $this->validateQuotationForHtml($contentArray['quotation']);
-            $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation'], $question);
+            $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
+                $contentArray['quotation'],
+                $question,
+                $this->getLatestQuotationHtml($chatId),
+            );
             $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
             if (!is_string($encoded) || $encoded === '') {
@@ -520,7 +537,7 @@ PROMPT;
      *
      * @param array<string, mixed> $quotationData
      */
-    private function callOpenAiQuestionOnlyHtmlSkeleton(array $quotationData, string $userInstruction = ''): string
+    private function callOpenAiQuestionOnlyHtmlSkeleton(array $quotationData, string $userInstruction = '', ?string $previousHtml = null): string
     {
         $agent = new Agent($this->platform, $this->model);
         $quotationJson = json_encode($quotationData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -529,18 +546,14 @@ PROMPT;
             throw new \RuntimeException('No fue posible serializar los datos de la cotización para generar el HTML.');
         }
 
-        $currentDate = new \DateTimeImmutable('now', new \DateTimeZone('America/Bogota'));
-        $today = $currentDate->format('Y-m-d');
-        $defaultValidUntil = $currentDate->modify('+15 days')->format('Y-m-d');
         $userPrompt = sprintf(
-            "Fecha actual: %s\nFecha de validez predeterminada si no se indica otra: %s\n\nInstrucción del usuario para el diseño o contenido:\n%s\n\nDatos de la cotización para inyectar:\n%s",
-            $today,
-            $defaultValidUntil,
+            "Instrucción visual del usuario:\n%s\n\nHTML base anterior para editar, si existe:\n%s\n\nDatos de la cotización para renderizar:\n%s",
             $userInstruction !== '' ? $userInstruction : 'Mantén un diseño profesional usando el esqueleto base.',
+            $previousHtml !== null && trim($previousHtml) !== '' ? $previousHtml : 'No existe un HTML previo.',
             $quotationJson,
         );
         $messages = new MessageBag(
-            new SystemMessage(self::HTML_SKELETON_PROMPT),
+            new SystemMessage($this->getHtmlSkeletonPrompt()),
             new UserMessage(new Text($userPrompt)),
         );
 
@@ -564,6 +577,10 @@ PROMPT;
      */
     private function validateQuotationForHtml(array $quotation): void
     {
+        if (trim((string) ($quotation['currency'] ?? '')) === '') {
+            throw new \RuntimeException('La cotización no contiene una moneda válida.');
+        }
+
         foreach (['issuer', 'client', 'commercial_terms', 'items'] as $field) {
             if (!is_array($quotation[$field] ?? null)) {
                 throw new \RuntimeException(sprintf(
@@ -571,6 +588,10 @@ PROMPT;
                     $field,
                 ));
             }
+        }
+
+        if ($quotation['items'] === []) {
+            throw new \RuntimeException('La cotización debe contener al menos un ítem.');
         }
 
         foreach (['subtotal', 'taxes', 'discounts', 'total'] as $field) {
@@ -599,6 +620,14 @@ PROMPT;
                 ));
             }
 
+            if (trim((string) ($item['description'] ?? '')) === '') {
+                throw new \RuntimeException(sprintf('El ítem %d no contiene descripción.', $itemIndex + 1));
+            }
+
+            if ((float) ($item['quantity'] ?? 0) <= 0) {
+                throw new \RuntimeException(sprintf('La cantidad del ítem %d debe ser mayor que cero.', $itemIndex + 1));
+            }
+
             foreach ($itemNumericFields as $field) {
                 if (!is_int($item[$field] ?? null) && !is_float($item[$field] ?? null)) {
                     throw new \RuntimeException(sprintf(
@@ -616,7 +645,7 @@ PROMPT;
         $currentDate = new \DateTimeImmutable('now', new \DateTimeZone('America/Bogota'));
 
         return sprintf(
-            'Contexto temporal para la cotización: fecha actual %s. Si el usuario no especifica una fecha o vigencia, usa esta fecha y calcula una vigencia estándar de 15 días. Si el usuario especifica una fecha o un plazo, respétalo. Debes registrar los valores resultantes en date y valid_until del JSON. No inventes fechas.',
+            'Solo cuando la intención sea crear o editar una cotización: la fecha actual es %s. Si el usuario no especifica fecha o vigencia, usa esa fecha y una vigencia estándar de 15 días. Si especifica una fecha o plazo, respétalo. Registra el resultado en date y valid_until. Para respuestas conversacionales, ignora por completo esta instrucción temporal y no devuelvas JSON.',
             $currentDate->format('Y-m-d'),
         );
     }
@@ -624,7 +653,7 @@ PROMPT;
     /**
      * @param array<int, string> $imagePaths
      */
-    private function callOpenAiWithImages(string $question, array $imagePaths, string $chatId): string
+    private function callOpenAiWithImages(string $question, array $imagePaths, string $chatId, bool $analysisOnly): string
     {
         $agent = new Agent($this->platform, $this->model);
         $history = $this->getConversationHistory($chatId);
@@ -653,7 +682,7 @@ PROMPT;
                 new Text(sprintf(
                     "Analiza la imagen %d para esta solicitud: %s",
                     $imageNumber,
-                    $question !== '' ? $question : self::DEFAULT_USER_QUESTION,
+                    $question !== '' ? $question : self::DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION,
                 )),
                 Image::fromFile($path),
             );
@@ -661,7 +690,7 @@ PROMPT;
             $imageMessages = $this->buildMessagesWithHistory(
                 $chatId,
                 $imageMessage,
-                self::IMAGE_ANALYSIS_SYSTEM_PROMPT,
+                $this->getImageAnalysisSystemPrompt(),
                 $history,
             );
             $imageResponse = $agent->call(new MessageBag(...$imageMessages));
@@ -707,15 +736,45 @@ PROMPT;
             throw new \RuntimeException('No fue posible consolidar los análisis individuales de las imágenes.');
         }
 
+        $coverage = [
+            'total_pages' => count($imagePaths),
+            'analyzed_pages' => count($imagesToAnalyze),
+            'omitted_pages' => count($imagePaths) - count($imagesToAnalyze),
+            'is_complete' => count($imagePaths) === count($imagesToAnalyze),
+        ];
+        $coverageJson = json_encode($coverage, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($coverageJson) || $coverageJson === '') {
+            throw new \RuntimeException('No fue posible serializar la cobertura del documento.');
+        }
+
         $finalPrompt = sprintf(
-            "Solicitud original del usuario:\n%s\n\nAnálisis individuales de las imágenes del plano:\n%s\n\nUsa estos análisis consolidados para generar la cotización final. Integra la información de todas las imágenes, evita duplicar elementos visibles en varias páginas y responde únicamente con el JSON de cotización solicitado.",
-            $question !== '' ? $question : self::DEFAULT_USER_QUESTION,
+            "Solicitud actual:\n%s\n\ndocument_coverage:\n%s\n\nAnálisis individuales:\n%s",
+            $question !== '' ? $question : self::DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION,
+            $coverageJson,
             $analysesJson,
         );
+        if ($analysisOnly) {
+            $summaryMessages = $this->buildMessagesWithHistory(
+                $chatId,
+                new UserMessage(new Text($finalPrompt)),
+                $this->getDocumentSummarySystemPrompt(),
+                [],
+            );
+            $summary = trim((string) $agent->call(new MessageBag(...$summaryMessages))->getContent());
+
+            if ($summary === '') {
+                throw new \RuntimeException('La IA no devolvió el resumen consolidado del documento.');
+            }
+
+            return $summary;
+        }
+
         $messages = $this->buildMessagesWithHistory(
             $chatId,
             new UserMessage(new Text($finalPrompt)),
-            self::SYSTEM_PROMPT . "\n\n" . $this->getQuotationDateInstruction(),
+            $this->getSystemPrompt()
+                . "\n\n" . $this->getQuotationConsolidationSystemPrompt()
+                . "\n\n" . $this->getQuotationDateInstruction(),
             $history,
         );
 
@@ -730,7 +789,11 @@ PROMPT;
 
         $this->validateQuotationForHtml($contentArray['quotation']);
         $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando generación de HTML (Paso 2).');
-        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton($contentArray['quotation'], $question);
+        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
+            $contentArray['quotation'],
+            $question,
+            $this->getLatestQuotationHtml($chatId),
+        );
 
         $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($encoded) || '' === $encoded) {
@@ -798,6 +861,20 @@ PROMPT;
             ]);
 
             return [];
+        }
+    }
+
+    private function getLatestQuotationHtml(string $chatId): ?string
+    {
+        try {
+            return $this->chatContextRetriever->getLatestContentBySessionAndRole($chatId, 'assistant_html');
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible recuperar el HTML previo desde Qdrant.', [
+                'chat_id' => $chatId,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return null;
         }
     }
 
@@ -988,7 +1065,7 @@ PROMPT;
             return null;
         }
 
-        return [
+        $normalized = [
             'quotation_number' => $this->normalizeString($quotation['quotation_number'] ?? null),
             'status' => $this->normalizeString($quotation['status'] ?? null),
             'date' => $this->normalizeString($quotation['date'] ?? null),
@@ -1004,6 +1081,54 @@ PROMPT;
             'total' => $this->normalizeNumber($quotation['total'] ?? null),
             'notes' => $this->normalizeString($quotation['notes'] ?? null),
         ];
+
+        return $this->recalculateQuotationTotals($normalized);
+    }
+
+    /**
+     * Recalcula únicamente valores matemáticos; las fechas siguen siendo
+     * responsabilidad del modelo según la instrucción del usuario.
+     *
+     * @param array<string, mixed> $quotation
+     * @return array<string, mixed>
+     */
+    private function recalculateQuotationTotals(array $quotation): array
+    {
+        $subtotal = 0.0;
+        $discounts = 0.0;
+        $taxes = 0.0;
+        $total = 0.0;
+
+        foreach ($quotation['items'] as $index => $item) {
+            $quantity = max(0.0, (float) ($item['quantity'] ?? 0));
+            $unitPrice = max(0.0, (float) ($item['unit_price'] ?? 0));
+            $discountPercentage = min(100.0, max(0.0, (float) ($item['discount_percentage'] ?? 0)));
+            $taxPercentage = min(100.0, max(0.0, (float) ($item['tax_percentage'] ?? 0)));
+            $itemSubtotal = $quantity * $unitPrice;
+            $itemDiscount = $itemSubtotal * ($discountPercentage / 100);
+            $taxableBase = $itemSubtotal - $itemDiscount;
+            $itemTaxes = $taxableBase * ($taxPercentage / 100);
+            $itemTotal = $taxableBase + $itemTaxes;
+
+            $quotation['items'][$index]['quantity'] = $quantity;
+            $quotation['items'][$index]['unit_price'] = $unitPrice;
+            $quotation['items'][$index]['discount_percentage'] = $discountPercentage;
+            $quotation['items'][$index]['tax_percentage'] = $taxPercentage;
+            $quotation['items'][$index]['subtotal'] = round($itemSubtotal, 2);
+            $quotation['items'][$index]['total'] = round($itemTotal, 2);
+
+            $subtotal += $itemSubtotal;
+            $discounts += $itemDiscount;
+            $taxes += $itemTaxes;
+            $total += $itemTotal;
+        }
+
+        $quotation['subtotal'] = round($subtotal, 2);
+        $quotation['discounts'] = round($discounts, 2);
+        $quotation['taxes'] = round($taxes, 2);
+        $quotation['total'] = round($total, 2);
+
+        return $quotation;
     }
 
     private function decodeJsonContent(string $content): mixed

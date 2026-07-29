@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Service\ChatToolPdf;
+namespace App\Service\Canvas;
 
 use RuntimeException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
