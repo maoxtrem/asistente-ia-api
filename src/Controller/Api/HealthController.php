@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\Service\Vector\QdrantClient;
+use Qdrant\Qdrant;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Attribute\Route;
 
 final class HealthController
 {
     public function __construct(
-        private readonly QdrantClient $qdrantClient,
+        #[Autowire(service: 'qdrant.official_client')]
+        private readonly Qdrant $qdrant,
         private readonly string $assistantName,
     ) {
     }
@@ -36,10 +38,25 @@ final class HealthController
     #[Route('/api/health', name: 'api_health', methods: ['GET'])]
     public function health(): JsonResponse
     {
+        try {
+            $response = $this->qdrant->collections()->list();
+            $collections = $response['result'] ?? [];
+
+            $qdrantHealth = [
+                'ok' => true,
+                'collections' => is_array($collections) ? $collections : [],
+            ];
+        } catch (\Throwable $exception) {
+            $qdrantHealth = [
+                'ok' => false,
+                'error' => $exception->getMessage(),
+            ];
+        }
+
         return new JsonResponse([
             'service' => $this->assistantName,
             'status' => 'ok',
-            'qdrant' => $this->qdrantClient->health(),
+            'qdrant' => $qdrantHealth,
         ]);
     }
 }

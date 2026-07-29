@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controller\Api;
 
-use App\Service\Canvas\PdfImageClient;
+use App\Service\Canvas\CanvasImageStorage;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -13,7 +13,7 @@ use Symfony\Component\Routing\Attribute\Route;
 final class CanvasImageController
 {
     public function __construct(
-        private readonly PdfImageClient $imageClient,
+        private readonly CanvasImageStorage $imageStorage,
     ) {
     }
 
@@ -31,7 +31,20 @@ final class CanvasImageController
             ]);
         }
 
-        return new Response('Las imagenes nuevas se sirven desde service-pdf. Usa imageUrl.', Response::HTTP_GONE);
+        $result = $this->imageStorage->resolve($key);
+
+        if (($result['ok'] ?? false) !== true) {
+            return new Response('No se encontró la imagen solicitada.', Response::HTTP_NOT_FOUND);
+        }
+
+        $imageUrl = (string) ($result['body']['image_url'] ?? '');
+        if ($imageUrl === '') {
+            return new Response('No se pudo resolver la URL de la imagen.', Response::HTTP_NOT_FOUND);
+        }
+
+        return new Response('', Response::HTTP_FOUND, [
+            'Location' => $imageUrl,
+        ]);
     }
 
     #[Route('/api/v1/asistentecamvasia/canvas/images', name: 'asistentecamvasia_canvas_images', methods: ['POST'])]
@@ -73,21 +86,20 @@ final class CanvasImageController
             ], Response::HTTP_BAD_REQUEST);
         }
 
-        try {
-            $result = $this->imageClient->list([
-                'tenant' => $tenant,
-                'usuario' => $usuario,
-                'entorno' => $entorno,
-                'limit' => $limit,
-            ]);
-        } catch (\Throwable $exception) {
+        $result = $this->imageStorage->list([
+            'tenant' => $tenant,
+            'usuario' => $usuario,
+            'entorno' => $entorno,
+            'limit' => $limit,
+        ]);
+
+        if (($result['ok'] ?? false) !== true) {
             return new JsonResponse([
                 'ok' => false,
-                'message' => 'No fue posible consultar el microservicio de imágenes.',
-                'error' => $exception->getMessage(),
+                'message' => (string) ($result['body']['error'] ?? 'No fue posible consultar las imágenes.'),
                 'count' => 0,
                 'items' => [],
-            ], Response::HTTP_BAD_GATEWAY);
+            ], (int) ($result['status_code'] ?? 500));
         }
 
         $records = is_array($result['body']['records'] ?? null) ? $result['body']['records'] : [];
@@ -100,6 +112,7 @@ final class CanvasImageController
             'status' => (string) ($item['status'] ?? ''),
             'image_file_name' => (string) ($item['image_file_name'] ?? ''),
             'image_mime_type' => (string) ($item['image_mime_type'] ?? ''),
+            'object_key' => (string) ($item['object_key'] ?? ''),
             'imageUrl' => (string) ($item['image_url'] ?? ''),
         ], $records);
 
@@ -107,6 +120,6 @@ final class CanvasImageController
             'ok' => (bool) ($result['ok'] ?? false),
             'count' => count($items),
             'items' => $items,
-        ]);
+        ], (int) ($result['status_code'] ?? 200));
     }
 }

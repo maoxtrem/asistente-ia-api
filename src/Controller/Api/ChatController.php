@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Controller\Api;
 
 use App\Service\Assistant\AssistantResponder;
-use App\Service\Vector\QdrantClient;
 use App\Repository\ChatHistoryRepository;
 use RuntimeException;
 use Throwable;
@@ -17,7 +16,6 @@ use Psr\Log\LoggerInterface;
 final class ChatController
 {
     public function __construct(
-        private readonly QdrantClient $qdrantClient,
         private readonly AssistantResponder $assistantResponder,
         private readonly ChatHistoryRepository $chatHistoryRepository,
         private readonly int $maxHistoryItems,

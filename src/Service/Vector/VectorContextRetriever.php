@@ -6,12 +6,20 @@ namespace App\Service\Vector;
 
 use App\Contract\EmbeddingProviderInterface;
 use RuntimeException;
+use Qdrant\Models\Filter\Condition\ConditionInterface;
+use Qdrant\Models\Filter\Condition\MatchAny;
+use Qdrant\Models\Filter\Condition\MatchBool;
+use Qdrant\Models\Filter\Condition\MatchInt;
+use Qdrant\Models\Filter\Condition\MatchString;
+use Qdrant\Models\Filter\Filter;
+use Qdrant\Models\Request\Points\QueryRequest;
+use Qdrant\Qdrant;
 
 final class VectorContextRetriever
 {
     public function __construct(
         private readonly EmbeddingProviderInterface $embeddingClient,
-        private readonly QdrantClient $qdrantClient,
+        private readonly Qdrant $qdrant,
         private readonly string $qdrantCollection,
         private readonly array $allowedDocumentKinds,
     ) {
@@ -74,7 +82,6 @@ final class VectorContextRetriever
     }
 
     /**
-     * @param float[] $vector
      * @return array<int, array{id:string, score:float, payload:array<string, mixed>}>
      */
     private function searchAcrossTenants(array $vector, ?string $tenant, int $limit, array &$searchTrace = []): array
@@ -89,14 +96,23 @@ final class VectorContextRetriever
             $shouldFilters[] = ['key' => 'is_global', 'value' => true];
         }
 
-        $results = $this->qdrantClient->searchPoints(
-            $this->qdrantCollection,
-            $vector,
-            $searchLimit,
-            null,
-            [],
-            $shouldFilters
-        );
+        $request = new QueryRequest();
+        $request
+            ->setQuery(['nearest' => array_values($vector)])
+            ->setLimit($searchLimit)
+            ->setWithPayload(true)
+            ->setWithVector(false);
+
+        $filter = $this->buildFilter(null, [], $shouldFilters);
+        if ($filter !== null) {
+            $request->setFilter($filter);
+        }
+
+        $response = $this->qdrant->collections($this->qdrantCollection)->points()->query()->query($request);
+        $results = $response['result']['points'] ?? [];
+        if (!is_array($results)) {
+            $results = [];
+        }
 
         $searchTrace[] = [
             'tenant' => $tenant !== '' ? $tenant : null,
@@ -124,6 +140,96 @@ final class VectorContextRetriever
         usort($matches, static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
 
         return array_slice($matches, 0, max(1, $limit));
+    }
+
+    /**
+     * @param array<string, mixed> $matchFilters
+     * @param array<int, array{key:string, value:mixed}> $shouldFilters
+     */
+    private function buildFilter(?string $tenant, array $matchFilters = [], array $shouldFilters = []): ?Filter
+    {
+        $filter = new Filter();
+        $hasConditions = false;
+
+        $tenant = trim((string) ($tenant ?? ''));
+        if ($tenant !== '') {
+            $condition = $this->buildCondition('tenant', $tenant);
+            if ($condition !== null) {
+                $filter->addMust($condition);
+                $hasConditions = true;
+            }
+        }
+
+        foreach ($matchFilters as $key => $value) {
+            $condition = $this->buildCondition((string) $key, $value);
+            if ($condition !== null) {
+                $filter->addMust($condition);
+                $hasConditions = true;
+            }
+        }
+
+        foreach ($shouldFilters as $shouldFilter) {
+            if (!is_array($shouldFilter)) {
+                continue;
+            }
+
+            $condition = $this->buildCondition(
+                (string) ($shouldFilter['key'] ?? ''),
+                $shouldFilter['value'] ?? null,
+            );
+
+            if ($condition !== null) {
+                $filter->addShould($condition);
+                $hasConditions = true;
+            }
+        }
+
+        return $hasConditions ? $filter : null;
+    }
+
+    private function buildCondition(string $key, mixed $value): ?ConditionInterface
+    {
+        $key = trim($key);
+        if ($key === '' || $value === null) {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+            if ($value === '') {
+                return null;
+            }
+
+            return new MatchString($key, $value);
+        }
+
+        if (is_bool($value)) {
+            return new MatchBool($key, $value);
+        }
+
+        if (is_int($value)) {
+            return new MatchInt($key, $value);
+        }
+
+        if (is_float($value)) {
+            return new MatchAny($key, [$value]);
+        }
+
+        if (is_array($value)) {
+            $values = array_values(array_filter($value, static fn (mixed $item): bool => $item !== null && $item !== ''));
+            if ($values === []) {
+                return null;
+            }
+
+            return new MatchAny($key, $values);
+        }
+
+        $castValue = trim((string) $value);
+        if ($castValue === '') {
+            return null;
+        }
+
+        return new MatchString($key, $castValue);
     }
 
     /**

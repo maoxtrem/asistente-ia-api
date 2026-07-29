@@ -5,7 +5,15 @@ declare(strict_types=1);
 namespace App\Command;
 
 use App\Contract\EmbeddingProviderInterface;
-use App\Service\Vector\QdrantClient;
+use Qdrant\Models\Filter\Condition\MatchString;
+use Qdrant\Models\Filter\Filter;
+use Qdrant\Models\PointStruct;
+use Qdrant\Models\PointsStruct;
+use Qdrant\Models\Request\CreateCollection;
+use Qdrant\Models\Request\ScrollRequest;
+use Qdrant\Models\Request\VectorParams;
+use Qdrant\Models\VectorStruct;
+use Qdrant\Qdrant;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -20,7 +28,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 final class ReindexQdrantCollectionCommand extends Command
 {
     public function __construct(
-        private readonly QdrantClient $qdrantClient,
+        private readonly Qdrant $qdrant,
         private readonly EmbeddingProviderInterface $embeddingProvider,
         private readonly string $qdrantCollection,
     ) {
@@ -64,7 +72,7 @@ final class ReindexQdrantCollectionCommand extends Command
         $vectorSize = null;
 
         while (true) {
-            $page = $this->qdrantClient->scrollPoints($sourceCollection, $limit, $offset, $tenant !== '' ? $tenant : null);
+            $page = $this->scrollPoints($sourceCollection, $limit, $offset, $tenant !== '' ? $tenant : null);
             $points = $page['points'];
 
             if ($points === []) {
@@ -86,7 +94,7 @@ final class ReindexQdrantCollectionCommand extends Command
                     $vector = $this->embeddingProvider->embed($text);
                     if ($vectorSize === null) {
                         $vectorSize = count($vector);
-                        $this->qdrantClient->ensureCollection($targetCollection, $vectorSize);
+                        $this->ensureCollection($targetCollection, $vectorSize);
                     }
                     $batch[] = [
                         'id' => $pointId,
@@ -101,7 +109,7 @@ final class ReindexQdrantCollectionCommand extends Command
 
             if ($batch !== []) {
                 try {
-                    $this->qdrantClient->upsertPointsBatch($targetCollection, $batch);
+                    $this->upsertPointsBatch($targetCollection, $batch);
                     $totalProcessed += count($batch);
                 } catch (\Throwable $exception) {
                     $totalErrors += count($batch);
@@ -158,5 +166,92 @@ final class ReindexQdrantCollectionCommand extends Command
         $encoded = json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         return is_string($encoded) ? trim($encoded) : '';
+    }
+
+    /**
+     * @return array{
+     *   points: array<int, array{id:string, payload:array<string, mixed>}>,
+     *   next_page_offset: int|string|null
+     * }
+     */
+    private function scrollPoints(string $collection, int $limit = 50, int|string|null $offset = null, ?string $tenant = null): array
+    {
+        $request = new ScrollRequest();
+        $request
+            ->setLimit(max(1, $limit))
+            ->setWithPayload(true)
+            ->setWithVector(false);
+
+        if ($offset !== null) {
+            $request->setOffset($offset);
+        }
+
+        $tenant = trim((string) ($tenant ?? ''));
+        if ($tenant !== '') {
+            $filter = (new Filter())->addMust(new MatchString('tenant', $tenant));
+            $request->setFilter($filter);
+        }
+
+        $response = $this->qdrant->collections($collection)->points()->scroll($request);
+        $payload = $response['result'] ?? [];
+
+        if (!is_array($payload)) {
+            return [
+                'points' => [],
+                'next_page_offset' => null,
+            ];
+        }
+
+        $points = $payload['points'] ?? [];
+        if (!is_array($points)) {
+            $points = [];
+        }
+
+        return [
+            'points' => array_values(array_map(static function (array $item): array {
+                return [
+                    'id' => (string) ($item['id'] ?? ''),
+                    'payload' => is_array($item['payload'] ?? null) ? $item['payload'] : [],
+                ];
+            }, $points)),
+            'next_page_offset' => $payload['next_page_offset'] ?? null,
+        ];
+    }
+
+    private function ensureCollection(string $collectionName, int $vectorSize): void
+    {
+        $collection = $this->qdrant->collections($collectionName);
+        $exists = $collection->exists();
+
+        if (($exists['result']['exists'] ?? false) === true) {
+            return;
+        }
+
+        $collection->create(
+            (new CreateCollection())->addVector(
+                new VectorParams($vectorSize, VectorParams::DISTANCE_COSINE)
+            )
+        );
+    }
+
+    /**
+     * @param array<int, array{id:string|int, vector:float[], payload:array<string, mixed>}> $points
+     */
+    private function upsertPointsBatch(string $collection, array $points): void
+    {
+        if ($points === []) {
+            return;
+        }
+
+        $pointsStruct = new PointsStruct();
+        foreach ($points as $point) {
+            $pointsStruct->addPoint(new PointStruct(
+                $point['id'],
+                new VectorStruct(array_values($point['vector'])),
+                $point['payload'],
+            ));
+        }
+
+        $this->qdrant->collections($collection)->points()->upsert($pointsStruct, ['wait' => true]);
     }
 }

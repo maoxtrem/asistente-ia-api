@@ -8,27 +8,22 @@
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
     app.assistant_name: "%env(string:ASSISTANT_NAME)%"
-    app.qdrant_url: "%env(string:QDRANT_URL)%"
+    app.qdrant_host: "%env(string:QDRANT_HOST)%"
     app.chat_qdrant_collection: "%env(string:QDRANT_CHAT_COLLECTION)%"
     app.chat_qdrant_pdf_collection: "%env(string:QDRANT_CHAT_PDF_COLLECTION)%"
     app.embedding_provider_url: "%env(string:EMBEDDING_PROVIDER_URL)%"
     app.embedding_model: "%env(string:EMBEDDING_MODEL)%"
-    app.chat_provider_url: "%env(string:CHAT_PROVIDER_URL)%"
     app.chat_model: "%env(string:CHAT_MODEL)%"
-    app.chat_timeout: "%env(float:CHAT_TIMEOUT)%"
-    app.chat_provider_kind: "%env(string:CHAT_PROVIDER_KIND)%"
     app.embedding_provider_kind: "%env(string:EMBEDDING_PROVIDER_KIND)%"
-    app.chat_api_key: "%env(string:CHAT_API_KEY)%"
     app.embedding_api_key: "%env(string:EMBEDDING_API_KEY)%"
     app.openai_api_key: "%env(string:OPENAI_API_KEY)%"
-    app.openai_image_provider_url: "%env(string:OPENAI_IMAGE_PROVIDER_URL)%"
-    app.openai_image_model: "%env(string:OPENAI_IMAGE_MODEL)%"
-    app.openai_image_size: "%env(string:OPENAI_IMAGE_SIZE)%"
-    app.openai_image_quality: "%env(string:OPENAI_IMAGE_QUALITY)%"
-    app.openai_image_output_format: "%env(string:OPENAI_IMAGE_OUTPUT_FORMAT)%"
-    app.openai_image_background: "%env(string:OPENAI_IMAGE_BACKGROUND)%"
-    app.canvas_service_url: "%env(string:CANVAS_SERVICE_URL)%"
-    app.canvas_service_host: "%env(string:CANVAS_SERVICE_HOST)%"
+    app.canvas_image_model: "%env(string:CANVAS_IMAGE_MODEL)%"
+    app.canvas_image_size: "%env(string:CANVAS_IMAGE_SIZE)%"
+    app.canvas_image_quality: "%env(string:CANVAS_IMAGE_QUALITY)%"
+    app.canvas_image_output_format: "%env(string:CANVAS_IMAGE_OUTPUT_FORMAT)%"
+    app.canvas_image_background: "%env(string:CANVAS_IMAGE_BACKGROUND)%"
+    app.canvas_minio_bucket: "%env(string:MINIO_BUCKET_CANVAS_IMAGE)%"
+    app.minio_url_expiration_hours: "%env(int:MINIO_URL_EXPIRATION_HOURS)%"
     app.chattoolpdf_model: "%env(string:CHATTOOLPDF_MODEL)%"
     app.chattoolpdf_max_history_messages: "%env(int:CHATTOOLPDF_MAX_HISTORY_MESSAGES)%"
     app.chattoolpdf_max_image_analyses: "%env(int:CHATTOOLPDF_MAX_IMAGE_ANALYSES)%"
@@ -58,10 +53,6 @@ services:
     App\:
         resource: "../src/"
 
-    App\Service\Vector\QdrantClient:
-        arguments:
-            $qdrantUrl: "%app.qdrant_url%"
-
     App\Service\Vector\VectorContextRetriever:
         arguments:
             $qdrantCollection: "%app.chat_qdrant_collection%"
@@ -69,38 +60,7 @@ services:
 
     App\Service\Ai\Chat\ChatPromptBuilder: ~
 
-    App\Service\Ai\Chat\LocalJsonChatProvider:
-        arguments:
-            $providerUrl: "%app.chat_provider_url%"
-            $chatModel: "%app.chat_model%"
-            $timeout: "%app.chat_timeout%"
-        tags: ["app.chat_provider"]
-
-    App\Service\Ai\Chat\OpenAiCompatibleChatProvider:
-        arguments:
-            $providerUrl: "%app.chat_provider_url%"
-            $chatModel: "%app.chat_model%"
-            $timeout: "%app.chat_timeout%"
-            $apiKey: "%app.chat_api_key%"
-        tags: ["app.chat_provider"]
-
-    App\Service\Ai\Image\OpenAiImageGenerationProvider:
-        arguments:
-            $providerUrl: "%app.openai_image_provider_url%"
-            $model: "%app.openai_image_model%"
-            $apiKey: "%app.openai_api_key%"
-            $fallbackApiKey: "%app.chat_api_key%"
-            $size: "%app.openai_image_size%"
-            $quality: "%app.openai_image_quality%"
-            $outputFormat: "%app.openai_image_output_format%"
-            $background: "%app.openai_image_background%"
-
-    App\Service\Ai\Chat\ChatProviderSelector:
-        arguments:
-            $providerKind: "%app.chat_provider_kind%"
-            $providers: !tagged_iterator app.chat_provider
-
-    App\Contract\ChatProviderInterface: '@App\Service\Ai\Chat\ChatProviderSelector'
+    App\Contract\ChatProviderInterface: '@App\Service\Ai\Chat\OpenAiPlatformChatProvider'
 
     App\Service\Ai\Embedding\LocalJsonEmbeddingProvider:
         arguments:
@@ -132,15 +92,6 @@ services:
         arguments:
             $qdrantCollection: "%app.chat_qdrant_collection%"
 
-    App\Service\Canvas\PdfImageClient:
-        arguments:
-            $servicePdfUrl: "%app.canvas_service_url%"
-            $servicePdfHost: "%app.canvas_service_host%"
-
-    App\Service\Canvas\CanvasGenerationService:
-        arguments:
-            $canvasEnvironment: "%app.canvas_image_environment%"
-
     App\Controller\Api\ChatController:
         arguments:
             $maxHistoryItems: "%app.chat_prompt_max_history_items%"
@@ -160,15 +111,29 @@ services:
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
-    Aws\S3\S3Client:
+    aws.s3.minio_internal_client:
+        class: Aws\S3\S3Client
         arguments:
             - version: "latest"
-              region: "us-east-1" # MinIO requiere una región, pon esta por defecto
+              region: "us-east-1"
               endpoint: "%env(MINIO_ENDPOINT)%"
-              use_path_style_endpoint: true # ¡CRUCIAL PARA MINIO!
+              use_path_style_endpoint: true
               credentials:
                   key: "%env(MINIO_ACCESS_KEY)%"
                   secret: "%env(MINIO_SECRET_KEY)%"
+
+    aws.s3.minio_public_client:
+        class: Aws\S3\S3Client
+        arguments:
+            - version: "latest"
+              region: "us-east-1"
+              endpoint: "%env(MINIO_PUBLIC_ENDPOINT)%"
+              use_path_style_endpoint: true
+              credentials:
+                  key: "%env(MINIO_ACCESS_KEY)%"
+                  secret: "%env(MINIO_SECRET_KEY)%"
+
+    Aws\S3\S3Client: '@aws.s3.minio_internal_client'
     # ==============================================================
     # CONFIGURACIÓN DEL NUEVO SDK DE QDRANT (Aislado del legacy)
     # ==============================================================
@@ -176,7 +141,7 @@ services:
     hkulekci.qdrant.config:
         class: Qdrant\Config
         arguments:
-            $host: "%app.qdrant_url%" # Reutilizamos tu variable de entorno existente
+            $host: "%app.qdrant_host%" # Reutilizamos tu variable de entorno existente
             # Si en el futuro usas API Key, descomenta la siguiente línea y pásale la variable
             # $apiKey: '%env(QDRANT_API_KEY)%'
 
@@ -192,8 +157,9 @@ services:
             - "@hkulekci.qdrant.config"
 
     # 4. Registramos el cliente oficial de Qdrant bajo un alias explícito
-    # Esto evita que Symfony lo confunda o sobrescriba tu QdrantClient legacy
     qdrant.official_client:
         class: Qdrant\Qdrant
         arguments:
             $transport: "@hkulekci.qdrant.transport"
+
+    Qdrant\Qdrant: '@qdrant.official_client'

@@ -7,13 +7,20 @@ namespace App\Service\Vector;
 use App\Contract\EmbeddingProviderInterface;
 use App\DTO\IndexDocument;
 use App\DTO\IndexDocumentResponse;
+use Qdrant\Models\PointStruct;
+use Qdrant\Models\PointsStruct;
+use Qdrant\Models\Request\CreateCollection;
+use Qdrant\Models\Request\VectorParams;
+use Qdrant\Models\VectorStruct;
+use Qdrant\Qdrant;
 use RuntimeException;
+use Symfony\Component\Uid\Uuid;
 
 final class IndexDocumentProcessor
 {
     public function __construct(
         private readonly EmbeddingProviderInterface $embeddingClient,
-        private readonly QdrantClient $qdrantClient,
+        private readonly Qdrant $qdrant,
         private readonly string $qdrantCollection,
     ) {
     }
@@ -25,8 +32,8 @@ final class IndexDocumentProcessor
         }
 
         if ($document->isDeletion()) {
-            $pointId = $this->qdrantClient->stablePointId($document->indexKey());
-            $this->qdrantClient->deletePoint($this->qdrantCollection, $pointId);
+            $pointId = $this->stablePointId($document->indexKey());
+            $this->qdrant->collections($this->qdrantCollection)->points()->delete([$pointId], ['wait' => true]);
 
             return new IndexDocumentResponse(
                 ok: true,
@@ -45,9 +52,18 @@ final class IndexDocumentProcessor
         }
 
         $vector = $this->embeddingClient->embed($text);
-        $this->qdrantClient->ensureCollection($this->qdrantCollection, count($vector));
+        $collection = $this->qdrant->collections($this->qdrantCollection);
+        $exists = $collection->exists();
 
-        $pointId = $this->qdrantClient->stablePointId($document->indexKey());
+        if (($exists['result']['exists'] ?? false) !== true) {
+            $collection->create(
+                (new CreateCollection())->addVector(
+                    new VectorParams(count($vector), VectorParams::DISTANCE_COSINE)
+                )
+            );
+        }
+
+        $pointId = $this->stablePointId($document->indexKey());
         $metadata = $document->metadata;
         $documentKind = trim((string) ($metadata['document_kind'] ?? ''));
         $payload = $document->toArray() + [
@@ -63,19 +79,31 @@ final class IndexDocumentProcessor
             $payload['is_global'] = true;
         }
 
-        $upsert = $this->qdrantClient->upsertPoint(
-            collection: $this->qdrantCollection,
-            pointId: $pointId,
-            vector: $vector,
-            payload: $payload,
-        );
+        $points = new PointsStruct();
+        $points->addPoint(new PointStruct(
+            $pointId,
+            new VectorStruct(array_values($vector)),
+            $payload
+        ));
+
+        $upsert = $collection->points()->upsert($points, ['wait' => true]);
 
         return new IndexDocumentResponse(
             ok: true,
             message: 'Documento indexado correctamente.',
             collection: $this->qdrantCollection,
             pointId: $pointId,
-            raw: $upsert,
+            raw: [
+                'status' => $upsert['status'] ?? 'ok',
+                'result' => $upsert['result'] ?? [],
+            ],
         );
+    }
+
+    private function stablePointId(string $seed): string
+    {
+        $namespace = Uuid::fromString(Uuid::NAMESPACE_URL);
+
+        return Uuid::v5($namespace, $seed)->toRfc4122();
     }
 }
