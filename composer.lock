@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "14c2abf1a416d1da1490772669b2dfb8",
+    "content-hash": "c980dd5feb92da8c7c126fb785be44be",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -2358,17 +2358,24 @@
         },
         {
             "name": "onlinesoftwarepro/ia-messages",
-            "version": "dev-main",
+            "version": "dev-master",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/maoxtrem/shared-messages-ia.git",
+                "reference": "3a00082df57fcd69f39f70a0b235a866abb691d9"
+            },
             "dist": {
-                "type": "path",
-                "url": "../shared-messages-ia",
-                "reference": "069e91c9273fa449f56d812c955ca563d5bdc384"
+                "type": "zip",
+                "url": "https://api.github.com/repos/maoxtrem/shared-messages-ia/zipball/3a00082df57fcd69f39f70a0b235a866abb691d9",
+                "reference": "3a00082df57fcd69f39f70a0b235a866abb691d9",
+                "shasum": ""
             },
             "require": {
                 "php": ">=8.1",
                 "symfony/messenger": "*",
                 "symfony/redis-messenger": "*"
             },
+            "default-branch": true,
             "type": "library",
             "autoload": {
                 "psr-4": {
@@ -2376,10 +2383,11 @@
                 }
             },
             "description": "Mensajes compartidos para microservicios de IA",
-            "transport-options": {
-                "symlink": true,
-                "relative": true
-            }
+            "support": {
+                "source": "https://github.com/maoxtrem/shared-messages-ia/tree/master",
+                "issues": "https://github.com/maoxtrem/shared-messages-ia/issues"
+            },
+            "time": "2026-07-30T23:11:29+00:00"
         },
         {
             "name": "oskarstark/enum-helper",

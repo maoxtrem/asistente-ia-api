@@ -5,11 +5,8 @@
     "prefer-stable": true,
     "repositories": [
         {
-            "type": "path",
-            "url": "../shared-messages-ia",
-            "options": {
-                "symlink": true
-            }
+            "type": "vcs",
+            "url": "https://github.com/maoxtrem/shared-messages-ia.git"
         }
     ],
     "require": {
