@@ -17,7 +17,7 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 final class OpenAiPlatformChatProvider implements ChatProviderInterface
 {
     public function __construct(
-        #[Autowire(service: 'ai.traceable_platform.openai')]
+        #[Autowire(service: 'ai.platform.openai')]
         private readonly PlatformInterface $platform,
         private readonly ChatPromptBuilder $promptBuilder,
         #[Autowire('%app.chat_model%')]

@@ -22,7 +22,7 @@ final class CanvasGenerationService
     public function __construct(
         private readonly CanvasImagePromptBuilder $promptBuilder,
         private readonly CanvasImageStorage $imageStorage,
-        #[Autowire(service: 'ai.traceable_platform.openai')]
+        #[Autowire(service: 'ai.platform.openai')]
         private readonly PlatformInterface $platform,
         #[Autowire('%app.canvas_image_model%')]
         private readonly string $imageModel,

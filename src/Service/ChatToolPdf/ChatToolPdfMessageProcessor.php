@@ -94,7 +94,7 @@ final readonly class ChatToolPdfMessageProcessor
         private string $gotenbergEndpoint,
         private ChatContextRetriever $chatContextRetriever,
         private PromptLoader $promptLoader,
-        #[Autowire(service: 'ai.traceable_platform.openai')]
+        #[Autowire(service: 'ai.platform.openai')]
         private PlatformInterface $platform,
         #[Autowire(service: 'chattoolpdf.storage.attach_pdf')]
         private FilesystemOperator $attachPdfStorage,
