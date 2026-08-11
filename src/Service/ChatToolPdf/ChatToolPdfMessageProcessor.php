@@ -4,17 +4,20 @@ declare(strict_types=1);
 
 namespace App\Service\ChatToolPdf;
 
+use App\Adapter\OllamaImageAdapter;
+use App\Entity\ChatHistoryPdf;
+use App\Entity\ChatHistoryPdfImage;
 use App\Entity\Loger;
-use App\Service\Vector\ChatContextRetriever;
+use App\Service\Prompt\PromptLoader;
 use Doctrine\ORM\EntityManagerInterface;
 use League\Flysystem\FilesystemOperator;
 use OSP\Message\AsistenteIA\ChatToolIAPdfResponse;
 use OSP\Message\AsistenteIA\ChatToolPdfMessage;
 use Psr\Log\LoggerInterface;
 use Symfony\AI\Agent\Agent;
+use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\Content\Image;
 use Symfony\AI\Platform\Message\Content\Text;
-use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\SystemMessage;
 use Symfony\AI\Platform\Message\UserMessage;
@@ -23,59 +26,16 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 use Symfony\Component\Messenger\MessageBusInterface;
-use App\Service\Prompt\PromptLoader;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Twig\Environment;
 
 final readonly class ChatToolPdfMessageProcessor
 {
     private const INTENT_CONVERSATION = 'conversation';
     private const INTENT_ANALYZE_DOCUMENT = 'analyze_document';
-    private const INTENT_CREATE_QUOTATION = 'create_quotation';
-    private const INTENT_EDIT_QUOTATION = 'edit_quotation';
-    private const INTENT_RENDER_QUOTATION = 'render_quotation';
-    private const DEFAULT_CONVERSATION_QUESTION = '¿En qué aspecto de la cotización necesitas ayuda?';
-    private const DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION = 'Genera una cotización a partir del documento adjunto. Usa moneda COP y limita los supuestos a precios o tarifas, identificándolos en las notas.';
-    private const DEFAULT_QUOTATION_MESSAGE = 'Cotización generada a partir de la información disponible.';
-
-    private function loadPrompt(string $promptName): string
-    {
-        return $this->promptLoader->load('chattoolpdf/' . $promptName);
-    }
-
-    private function getConversationSystemPrompt(): string
-    {
-        return $this->loadPrompt('conversation_system_prompt.md');
-    }
-
-    private function getDocumentSummarySystemPrompt(): string
-    {
-        return $this->loadPrompt('document_summary_system_prompt.md');
-    }
-
-    private function getQuotationConsolidationSystemPrompt(): string
-    {
-        return $this->loadPrompt('quotation_consolidation_system_prompt.md');
-    }
-
-    private function getQuestionSystemPrompt(): string
-    {
-        return $this->loadPrompt('question_system_prompt.md');
-    }
-
-    private function getSystemPrompt(): string
-    {
-        return $this->loadPrompt('system_prompt.md');
-    }
-
-    private function getImageAnalysisSystemPrompt(): string
-    {
-        return $this->loadPrompt('image_analysis_system_prompt.md');
-    }
-
-    private function getHtmlSkeletonPrompt(): string
-    {
-        return $this->loadPrompt('html_skeleton_prompt.md');
-    }
+    private const INTENT_CREATE_DOCUMENT = 'create_document';
+    private const INTENT_EDIT_DOCUMENT = 'edit_document';
+    private const INTENT_NO_UNDERSTAND_QUESTION = 'no_understand_question';
 
     public function __construct(
         private LoggerInterface $logger,
@@ -84,279 +44,978 @@ final readonly class ChatToolPdfMessageProcessor
         private HttpClientInterface $httpClient,
         #[Autowire('%app.chattoolpdf_model%')]
         private string $model,
-        #[Autowire('%app.chattoolpdf_max_history_messages%')]
-        private int $maxHistoryMessages,
-        #[Autowire('%app.chattoolpdf_max_image_analyses%')]
-        private int $maxImageAnalyses,
-        #[Autowire('%app.stirling_pdf_endpoint%')]
-        private string $stirlingEndpoint,
+        #[Autowire('%app.chattoolpdf_image_dpi%')]
+        private int $imageDpi,
+        #[Autowire('%app.chattoolpdf_image_reevaluation_index%')]
+        private int $imageReevaluationIndex,
         #[Autowire('%app.gotenberg_endpoint%')]
         private string $gotenbergEndpoint,
-        private ChatContextRetriever $chatContextRetriever,
-        private PromptLoader $promptLoader,
-        #[Autowire(service: 'ai.platform.openai')]
+        #[Autowire('%app.stirling_pdf_endpoint%')]
+        private string $stirlingEndpoint,
+        #[Autowire(service: 'ai.platform.ollama')]
         private PlatformInterface $platform,
+        private PromptLoader $promptLoader,
         #[Autowire(service: 'chattoolpdf.storage.attach_pdf')]
         private FilesystemOperator $attachPdfStorage,
         #[Autowire(service: 'chattoolpdf.storage.zip')]
         private FilesystemOperator $chattoolpdfZipStorage,
+        private Environment $twig,
+        private OllamaImageAdapter $ollamaImageAdapter,
     ) {}
 
+    // Flujo principal: recibe el mensaje, obtiene la intención y deriva la ejecución.
     public function process(ChatToolPdfMessage $message): void
     {
-        $attachmentPath = $message->getAttachmentKey();
-        $chatId = (string) $message->getChatId();
-        $userText = $this->normalizeQuestion($message->getMessage());
-        $aiContent = null;
-        $pdfUrl = null;
-        $resolvedAttachmentPath = is_string($attachmentPath) && trim($attachmentPath) !== ''
-            ? trim($attachmentPath)
-            : null;
-        $history = $this->getConversationHistory($chatId);
-        $currentQuotation = $this->findLatestQuotation($history);
-        $intent = $this->classifyIntent(
-            $userText,
-            $resolvedAttachmentPath !== null,
-            $currentQuotation !== null,
-        );
+        $question = $this->normalizeQuestion($message->getMessage());
+        $attachmentKey = trim((string) $message->getAttachmentKey());
+        $hasNewAttachment = $attachmentKey !== '';
+
+        // 1. Obtener historial ANTES de clasificar para inyectar contexto a la IA
+        $historyRecords = $this->getRecentHistory($message->getChatId(), $message->getUserIdentifier(), 20);
+
+        // 2. Clasificar intención pasando el historial
+        $intent = $this->classifyIntent($question, $historyRecords);
+        $this->persistUserMessage($message, $intent);
+
+        // 3. Determinar el estado real de los adjuntos (Nuevos o en el historial)
+        $activeAttachmentKey = $hasNewAttachment
+            ? $attachmentKey
+            : $this->findLatestAttachmentKey(
+                $message->getChatId(),
+                $message->getUserIdentifier(),
+            );
+        $hasActiveDocument = $activeAttachmentKey !== null;
+
+        // =================================================================
+        // MATRIZ DE DECISIÓN ESTRICTA E INTERCEPCIONES (Limpia)
+        // =================================================================
+
+        // 1. Alucinación de adjunto (Pide analizar pero no sube nada ni hay historial)
+        if ($intent === self::INTENT_ANALYZE_DOCUMENT && !$hasActiveDocument) {
+            $this->dispatchResponse($message, 'Solicitas un análisis, pero no hay ningún documento activo. Súbelo para continuar.');
+            return;
+        }
+
+        #// 2. Edición fantasma (Pide editar pero no hay documento previo)
+        #if ($intent === self::INTENT_EDIT_DOCUMENT && !$hasActiveDocument) {
+        #    $this->dispatchResponse($message, 'No encuentro un documento en esta conversación para editar.');
+        #    return;
+        #}
+
+        // 3. Choque de contextos (Pide editar un documento viejo, pero sube uno nuevo)
+        #if ($intent === self::INTENT_EDIT_DOCUMENT && $hasNewAttachment) {
+        #    $intent = self::INTENT_ANALYZE_DOCUMENT;
+        #}
+
+        // 4. Saludo mudo con archivo (Sube un archivo nuevo y la intención es nula o cháchara)
+        if (in_array($intent, [self::INTENT_CONVERSATION, self::INTENT_NO_UNDERSTAND_QUESTION], true) && $hasNewAttachment) {
+            $intent = self::INTENT_ANALYZE_DOCUMENT;
+        }
+
+        // NOTA: Se ha eliminado el bloqueo sobre INTENT_CREATE_DOCUMENT.
+        // Si el LLM decide crear porque hay contexto de texto, se respeta la decisión.
+
+        // =================================================================
+        // EJECUCIÓN VALIDADA
+        // =================================================================
+               $this->logger->warning('[EJECUCIÓN VALIDADA] Respuesta de la ia intenciones', [
+                   $intent
+                ]);
+        match ($intent) {
+            self::INTENT_ANALYZE_DOCUMENT => $this->analyzeDocument($message, $activeAttachmentKey),
+            self::INTENT_CREATE_DOCUMENT  => $this->createDocument($message),
+            self::INTENT_EDIT_DOCUMENT    => $this->editDocument($message),
+            self::INTENT_CONVERSATION,
+            self::INTENT_NO_UNDERSTAND_QUESTION => $this->conversation($message),
+            default => $this->conversation($message),
+        };
+    }
+
+    private function analyzeDocument(ChatToolPdfMessage $message, string $attachmentKey): void
+    {
+        $attachmentZipKey = $this->convertAndStoreAttachmentZip($message, $attachmentKey);
+
+        if ($attachmentZipKey === null) {
+            $this->dispatchResponse($message, "analizare el documento");
+            return;
+        }
+
+        $images = $this->extractAndProcessImages($message, $attachmentZipKey);
+        foreach ($images as $image) {
+            $this->processImageWithAi($message, $image);
+        }
+
+        $this->dispatchResponse($message, "analizare el documento");
+    }
+
+    private function convertAndStoreAttachmentZip(
+        ChatToolPdfMessage $message,
+        string $attachmentKey,
+    ): ?string {
+        $history = $this->entityManager->getRepository(ChatHistoryPdf::class)
+            ->createQueryBuilder('history')
+            ->where('history.chatId = :chatId')
+            ->andWhere('history.userIdentifier = :userIdentifier')
+            ->andWhere('history.attachmentKey = :attachmentKey')
+            ->setParameter('chatId', $message->getChatId())
+            ->setParameter('userIdentifier', $message->getUserIdentifier())
+            ->setParameter('attachmentKey', $attachmentKey)
+            ->orderBy('history.createdAt', 'DESC')
+            ->addOrderBy('history.id', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        if (!$history instanceof ChatHistoryPdf) {
+            return null;
+        }
+
+        $attachmentZipKey = trim((string) $history->getAttachmentZipKey());
+
+        if ($attachmentZipKey !== '') {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Se reutiliza el ZIP existente del adjunto.', [
+                'attachment_key' => $attachmentKey,
+                'attachment_zip_key' => $attachmentZipKey,
+                'chat_id' => $message->getChatId(),
+            ]);
+
+            return $attachmentZipKey;
+        }
+
+        $pdfBinary = $this->attachPdfStorage->read($attachmentKey);
+        $tempPdfPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . uniqid('pdf_to_convert_', true) . '.pdf';
+
+        if (file_put_contents($tempPdfPath, $pdfBinary) === false) {
+            throw new \RuntimeException('No fue posible escribir el PDF temporal en el disco.');
+        }
 
         try {
-            if ($intent === self::INTENT_RENDER_QUOTATION) {
-                $aiContent = $currentQuotation !== null
-                    ? $this->renderExistingQuotation($currentQuotation, $userText, $chatId)
-                    : 'No existe una cotización previa para volver a generar el PDF.';
-            } elseif ($intent === self::INTENT_CONVERSATION) {
-                $aiContent = $this->answerConversation($userText, $chatId, $history);
-            } elseif ($resolvedAttachmentPath === null) {
-                $aiContent = match ($intent) {
-                    self::INTENT_EDIT_QUOTATION => $this->answerQuestionOnly($userText, $chatId),
-                    self::INTENT_CREATE_QUOTATION => $this->createQuotationFromText($userText, $chatId, $history),
-                    default => $this->answerConversation($userText, $chatId, $history),
-                };
-            } else {
-                if (!$this->attachPdfStorage->fileExists($resolvedAttachmentPath)) {
-                    $this->logger->error('[ChatToolPdfMessageProcessor] El archivo no existe en storage.', [
-                        'attachment_path' => $resolvedAttachmentPath,
-                        'chat_id' => $message->getChatId(),
-                    ]);
-                    $aiContent = 'No fue posible procesar el documento adjunto porque el archivo no existe.';
-                } else {
-                    $zipBinaryContent = $this->convertAndStorePdf($resolvedAttachmentPath, $message);
-                    $aiContent = $this->analyzeZipBinary(
-                        $zipBinaryContent,
-                        $userText,
-                        $chatId,
-                        $intent === self::INTENT_ANALYZE_DOCUMENT,
-                    );
+            $formData = new FormDataPart([
+                'fileInput' => DataPart::fromPath($tempPdfPath, 'documento.pdf', 'application/pdf'),
+                'pageNumbers' => 'all',
+                'imageFormat' => 'jpeg',
+                'singleOrMultiple' => 'multiple',
+                'colorType' => 'color',
+                'dpi' => (string) $this->imageDpi,
+            ]);
+            $response = $this->httpClient->request('POST', $this->stirlingEndpoint, [
+                'headers' => $formData->getPreparedHeaders()->toArray(),
+                'body' => $formData->bodyToIterable(),
+            ]);
+
+            if ($response->getStatusCode() !== 200) {
+                throw new \RuntimeException(sprintf(
+                    'Stirling devolvió status %d: %s',
+                    $response->getStatusCode(),
+                    $response->getContent(false),
+                ));
+            }
+
+            $zipPath = preg_replace('/\.pdf$/i', '', $attachmentKey) . '.stirling.zip';
+            if (!is_string($zipPath) || $zipPath === '') {
+                throw new \RuntimeException('No fue posible generar la clave del ZIP.');
+            }
+
+            $this->chattoolpdfZipStorage->write($zipPath, $response->getContent());
+
+            $history->setAttachmentZipKey($zipPath);
+            $this->entityManager->persist($history);
+
+            $loger = new Loger($zipPath, $message->getCreatedAt());
+            $this->entityManager->persist($loger);
+            $this->entityManager->flush();
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] PDF convertido con Stirling y ZIP guardado.', [
+                'attachment_key' => $attachmentKey,
+                'attachment_zip_key' => $zipPath,
+                'chat_id' => $message->getChatId(),
+            ]);
+        } finally {
+            if (file_exists($tempPdfPath)) {
+                unlink($tempPdfPath);
+            }
+        }
+
+        return $zipPath;
+    }
+
+    /**
+     * @return list<ChatHistoryPdfImage>
+     */
+    private function extractAndProcessImages(
+        ChatToolPdfMessage $message,
+        string $attachmentZipKey,
+    ): array {
+        $history = $this->findHistoryByAttachmentZipKey($message, $attachmentZipKey);
+        $storedImages = $this->findStoredImages($history);
+        $zipImageCount = $this->countImagesInZip($attachmentZipKey);
+
+        if ($this->areStoredImagesAvailable($storedImages, $zipImageCount)) {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Se reutilizan las imágenes ya extraídas del ZIP.', [
+                'chat_id' => $message->getChatId(),
+                'attachment_zip_key' => $attachmentZipKey,
+                'stored_images' => count($storedImages),
+                'zip_images' => $zipImageCount,
+            ]);
+
+            return $storedImages;
+        }
+
+        $this->extractImagesFromZip($message, $history, $attachmentZipKey);
+
+        return $this->findStoredImages($history);
+    }
+
+    private function findHistoryByAttachmentZipKey(
+        ChatToolPdfMessage $message,
+        string $attachmentZipKey,
+    ): ChatHistoryPdf {
+        $history = $this->entityManager->getRepository(ChatHistoryPdf::class)
+            ->createQueryBuilder('history')
+            ->where('history.chatId = :chatId')
+            ->andWhere('history.userIdentifier = :userIdentifier')
+            ->andWhere('history.attachmentZipKey = :attachmentZipKey')
+            ->setParameter('chatId', $message->getChatId())
+            ->setParameter('userIdentifier', $message->getUserIdentifier())
+            ->setParameter('attachmentZipKey', $attachmentZipKey)
+            ->orderBy('history.createdAt', 'DESC')
+            ->addOrderBy('history.id', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        if (!$history instanceof ChatHistoryPdf) {
+            throw new \RuntimeException('No se encontró el historial asociado al ZIP de imágenes.');
+        }
+
+        return $history;
+    }
+
+    /**
+     * @return list<ChatHistoryPdfImage>
+     */
+    private function findStoredImages(ChatHistoryPdf $history): array
+    {
+        return $this->entityManager->getRepository(ChatHistoryPdfImage::class)->findBy(
+            ['chatHistoryPdf' => $history],
+            ['imageNumber' => 'ASC'],
+        );
+    }
+
+    /**
+     * @param list<ChatHistoryPdfImage> $storedImages
+     */
+    private function areStoredImagesAvailable(
+        array $storedImages,
+        ?int $zipImageCount,
+    ): bool
+    {
+        if ($storedImages === []) {
+            return false;
+        }
+
+        if ($zipImageCount !== null && count($storedImages) !== $zipImageCount) {
+            return false;
+        }
+
+        $expectedImageNumber = 1;
+        foreach ($storedImages as $storedImage) {
+            if (
+                $storedImage->getImageNumber() !== $expectedImageNumber
+                ||
+                trim($storedImage->getImageKey()) === ''
+                || !$this->chattoolpdfZipStorage->fileExists($storedImage->getImageKey())
+            ) {
+                return false;
+            }
+
+            ++$expectedImageNumber;
+        }
+
+        return true;
+    }
+
+    private function countImagesInZip(string $attachmentZipKey): ?int
+    {
+        if (!$this->chattoolpdfZipStorage->fileExists($attachmentZipKey)) {
+            return null;
+        }
+
+        $zipBinary = $this->chattoolpdfZipStorage->read($attachmentZipKey);
+        if ($zipBinary === '') {
+            return null;
+        }
+
+        $tempZipPath = tempnam(sys_get_temp_dir(), 'chattoolpdf_zip_count_');
+        if ($tempZipPath === false) {
+            throw new \RuntimeException('No fue posible crear el archivo temporal para validar el ZIP.');
+        }
+
+        if (file_put_contents($tempZipPath, $zipBinary) === false) {
+            unlink($tempZipPath);
+            throw new \RuntimeException('No fue posible guardar el ZIP temporal para validarlo.');
+        }
+
+        try {
+            $zip = new \ZipArchive();
+            if ($zip->open($tempZipPath) !== true) {
+                throw new \RuntimeException('No fue posible abrir el ZIP para contar sus imágenes.');
+            }
+
+            $imageCount = 0;
+            for ($index = 0; $index < $zip->numFiles; ++$index) {
+                if ($this->isImageEntryName($zip->getNameIndex($index))) {
+                    ++$imageCount;
                 }
             }
-        } catch (\Throwable $exception) {
-            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible completar el flujo de IA.', [
-                'attachment_path' => $resolvedAttachmentPath,
-                'chat_id' => $message->getChatId(),
-                'intent' => $intent,
-                'error' => $exception->getMessage(),
-            ]);
-            $aiContent = $resolvedAttachmentPath !== null
-                ? 'No fue posible procesar el documento adjunto. Verifica que sea un PDF válido e inténtalo nuevamente.'
-                : 'No fue posible procesar la solicitud. Inténtalo nuevamente.';
+
+            $zip->close();
+
+            return $imageCount;
+        } finally {
+            if (file_exists($tempZipPath)) {
+                unlink($tempZipPath);
+            }
+        }
+    }
+
+    private function isImageEntryName(mixed $entryName): bool
+    {
+        return is_string($entryName)
+            && !str_ends_with($entryName, '/')
+            && preg_match('/\.(jpe?g|png|webp)$/i', $entryName) === 1;
+    }
+
+    private function extractImagesFromZip(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdf $history,
+        string $attachmentZipKey,
+    ): void {
+        $imageDirectory = preg_replace('/\.zip$/i', '.images', $attachmentZipKey);
+        if (!is_string($imageDirectory) || $imageDirectory === '') {
+            throw new \RuntimeException('No fue posible generar la carpeta de imágenes.');
         }
 
-        if ($aiContent !== null && trim($aiContent) !== '') {
-            // Las respuestas conversacionales no contienen HTML y no deben
-            // intentar pasar por el conversor de PDF.
-            if ($this->hasGeneratedHtml($aiContent)) {
-                $pdfUrl = $this->generateAndStorePdfFromContent($aiContent, $chatId);
+        $zipBinary = $this->chattoolpdfZipStorage->read($attachmentZipKey);
+        if ($zipBinary === '') {
+            return;
+        }
+
+        $tempZipPath = tempnam(sys_get_temp_dir(), 'chattoolpdf_zip_');
+        if ($tempZipPath === false) {
+            throw new \RuntimeException('No fue posible crear el archivo temporal del ZIP.');
+        }
+
+        if (file_put_contents($tempZipPath, $zipBinary) === false) {
+            unlink($tempZipPath);
+            throw new \RuntimeException('No fue posible guardar el ZIP temporal.');
+        }
+
+        $imagePaths = [];
+        try {
+            $zip = new \ZipArchive();
+            if ($zip->open($tempZipPath) !== true) {
+                throw new \RuntimeException('No fue posible abrir el ZIP de imágenes.');
             }
 
-            $this->saveConversationHistory($chatId, $userText, $aiContent);
-        }
+            for ($index = 0; $index < $zip->numFiles; ++$index) {
+                $entryName = $zip->getNameIndex($index);
+                if (!$this->isImageEntryName($entryName)) {
+                    continue;
+                }
 
-        $responseContent = $aiContent !== null ? $this->removeInternalHtml($aiContent) : null;
-        $this->dispatchResponse(
-            $message,
-            $resolvedAttachmentPath,
-            $responseContent,
-            $pdfUrl,
-        );
+                $imageBinary = $zip->getFromIndex($index);
+                if ($imageBinary === false || $imageBinary === '') {
+                    continue;
+                }
+
+                $extension = strtolower(pathinfo($entryName, PATHINFO_EXTENSION));
+                $imageNumber = count($imagePaths) + 1;
+                $imageName = basename($entryName);
+                $imageFileName = sprintf('%04d_%s', $imageNumber, $imageName);
+                $imageKey = $imageDirectory . '/' . $imageFileName;
+                $mimeType = match ($extension) {
+                    'jpg', 'jpeg' => 'image/jpeg',
+                    'png' => 'image/png',
+                    'webp' => 'image/webp',
+                    default => 'application/octet-stream',
+                };
+
+                $imagePath = tempnam(sys_get_temp_dir(), 'chattoolpdf_image_');
+                if ($imagePath === false) {
+                    continue;
+                }
+
+                unlink($imagePath);
+                $imagePath .= $extension !== '' ? '.' . $extension : '';
+
+                if (file_put_contents($imagePath, $imageBinary) === false) {
+                    unlink($imagePath);
+                    continue;
+                }
+
+                $imagePaths[] = $imagePath;
+
+                $this->processImage(
+                    $message,
+                    $history,
+                    $imagePath,
+                    $imageBinary,
+                    $imageKey,
+                    $imageName,
+                    $imageNumber,
+                    $mimeType,
+                );
+            }
+
+            $zip->close();
+            $this->entityManager->flush();
+        } finally {
+            if (file_exists($tempZipPath)) {
+                unlink($tempZipPath);
+            }
+
+            foreach ($imagePaths as $imagePath) {
+                if (file_exists($imagePath)) {
+                    unlink($imagePath);
+                }
+            }
+        }
     }
 
-    private function removeInternalHtml(string $content): string
-    {
-        $decoded = json_decode(trim($content), true);
-        if (!is_array($decoded) || !array_key_exists('html', $decoded)) {
-            return $content;
+    private function processImageWithAi(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): void {
+        $approved = $image->getApproved();
+
+        if ($approved === null) {
+            $approved = $this->runPreliminaryImageReview($message, $image);
+            if ($approved === null) {
+                return;
+            }
         }
 
-        unset($decoded['html']);
-        $encoded = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!$approved) {
+            return;
+        }
 
-        return is_string($encoded) && $encoded !== '' ? $encoded : $content;
+        if ($image->getContextGeneralAnalyzed() !== true) {
+            if (!$this->runContextGeneralExtraction($message, $image)) {
+                return;
+            }
+        }
+
+        if ($image->getContextGeneralAnalyzed() !== true) {
+            return;
+        }
+
+        if ($image->getMaterialsSystemsAnalyzed() !== true) {
+            if (!$this->runMaterialsSystemsExtraction($message, $image)) {
+                return;
+            }
+        }
+
+        if ($image->getMaterialsSystemsAnalyzed() !== true) {
+            return;
+        }
+
+        if ($image->getGeometryQuantitiesAnalyzed() !== true) {
+            if (!$this->runGeometryQuantitiesExtraction($message, $image)) {
+                return;
+            }
+        }
     }
 
-    private function classifyIntent(string $userText, bool $hasAttachment, bool $hasCurrentQuotation): string
-    {
-        $allowedIntents = [
-            self::INTENT_CONVERSATION,
-            self::INTENT_ANALYZE_DOCUMENT,
-            self::INTENT_CREATE_QUOTATION,
-            self::INTENT_EDIT_QUOTATION,
-            self::INTENT_RENDER_QUOTATION,
-        ];
-        $question = $userText !== '' ? $userText : self::DEFAULT_CONVERSATION_QUESTION;
-        $prompt = sprintf(
-            "Clasifica la intención actual. Responde únicamente JSON: {\"intent\":\"conversation|analyze_document|create_quotation|edit_quotation|render_quotation\"}.\nAdjunto presente: %s\nCotización previa disponible: %s\nMensaje: %s",
-            $hasAttachment ? 'sí' : 'no',
-            $hasCurrentQuotation ? 'sí' : 'no',
-            $question,
-        );
+    private function runContextGeneralExtraction(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): bool {
+        $tempImagePath = null;
 
         try {
-            $agent = new Agent($this->platform, $this->model);
-            $response = $agent->call(new MessageBag(
-                new SystemMessage('Clasifica la intención sin responder la solicitud. edit_quotation aplica cuando se modifica cualquier dato de la cotización: fechas, cantidades, precios, impuestos, descuentos, nombres, moneda, términos, ítems o notas. Si una solicitud combina cambios comerciales y visuales, clasifícala siempre como edit_quotation. render_quotation se usa exclusivamente cuando solo cambia diseño, colores, tipografía, encabezado o se regenera el PDF sin alterar ningún dato. analyze_document significa resumir o inspeccionar un archivo sin cotizar.'),
-                new UserMessage(new Text($prompt)),
-            ));
-            $decoded = $this->decodeJsonContent((string) $response->getContent());
-            $intent = is_array($decoded) ? (string) ($decoded['intent'] ?? '') : '';
-            if (in_array($intent, $allowedIntents, true)) {
-                return $intent;
+            $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando extracción de contexto general.', $this->imageLogContext($message, $image));
+            $imageBinary = $this->chattoolpdfZipStorage->read($image->getImageKey());
+            if ($imageBinary === '') {
+                throw new \RuntimeException('No fue posible leer la imagen para extraer el contexto general.');
             }
+
+            $extension = strtolower(pathinfo($image->getImageName(), PATHINFO_EXTENSION));
+            $tempImagePath = tempnam(sys_get_temp_dir(), 'chattoolpdf_context_');
+            if ($tempImagePath === false) {
+                throw new \RuntimeException('No fue posible crear el archivo temporal para extraer el contexto general.');
+            }
+
+            unlink($tempImagePath);
+            $tempImagePath .= $extension !== '' ? '.' . $extension : '';
+
+            if (file_put_contents($tempImagePath, $imageBinary) === false) {
+                throw new \RuntimeException('No fue posible guardar la imagen temporal para extraer el contexto general.');
+            }
+
+            $reasoning = trim((string) $image->getReasoning());
+            $userPrompt = 'Extrae los textos, notas y el contexto general de esta imagen.';
+            if ($reasoning !== '') {
+                $userPrompt .= sprintf(
+                    "\n\nContexto de la revisión preliminar de esta imagen:\n%s",
+                    $reasoning,
+                );
+            }
+
+            $responseContent = $this->analyzeImageWithAi(
+                $this->loadPrompt('image_context_general_system_prompt.md'),
+                $userPrompt,
+                $tempImagePath,
+                $imageBinary,
+            );
+            $contextGeneralJson = $this->decodeJsonContent($responseContent);
+
+            if (!is_array($contextGeneralJson)) {
+                throw new \RuntimeException(sprintf(
+                    'La IA no devolvió un JSON válido para el contexto general. Error JSON: %s. Longitud: %d. Respuesta: %s',
+                    json_last_error_msg(),
+                    strlen($responseContent),
+                    $this->truncateAiResponse($responseContent),
+                ));
+            }
+
+            $image->setContextGeneralAnalyzed(true);
+            $image->setContextGeneraJson($contextGeneralJson);
+            $this->entityManager->persist($image);
+            $this->entityManager->flush();
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] Extracción de contexto general completada.', $this->imageLogContext($message, $image));
+            return true;
         } catch (\Throwable $exception) {
-            $this->logger->warning('[ChatToolPdfMessageProcessor] Falló el clasificador de intención; se aplicará una ruta segura.', [
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible extraer el contexto general de la imagen.', $this->imageLogContext($message, $image) + [
                 'error' => $exception->getMessage(),
             ]);
-        }
-
-        if ($hasAttachment) {
-            return preg_match('/\b(resume|resumen|analiza|describe|medidas|páginas|paginas|sin cotizar|no cotización|no cotizacion)\b/iu', $question) === 1
-                ? self::INTENT_ANALYZE_DOCUMENT
-                : self::INTENT_CREATE_QUOTATION;
-        }
-
-        if ($hasCurrentQuotation && preg_match('/\b(fecha|vigencia|plazo|descuento|impuesto|precio|cantidad|cliente|emisor|moneda|término|termino|ítem|item|nota|material|subtotal|total)\b/iu', $question) === 1) {
-            return self::INTENT_EDIT_QUOTATION;
-        }
-
-        if ($hasCurrentQuotation && preg_match('/\b(color|diseño|diseno|estilo|encabezado|tipografía|tipografia|pdf|regenera|renderiza)\b/iu', $question) === 1) {
-            return self::INTENT_RENDER_QUOTATION;
-        }
-
-        return self::INTENT_CONVERSATION;
-    }
-
-    /**
-     * @param array<int, array{role: string, content: string}> $history
-     * @return array<string, mixed>|null
-     */
-    private function findLatestQuotation(array $history): ?array
-    {
-        foreach (array_reverse($history) as $historyMessage) {
-            if (($historyMessage['role'] ?? '') !== 'assistant') {
-                continue;
-            }
-
-            $decoded = $this->decodeJsonContent((string) ($historyMessage['content'] ?? ''));
-            if (!is_array($decoded)) {
-                continue;
-            }
-
-            $quotation = $this->normalizeQuotationContent($decoded['quotation'] ?? null);
-            if ($quotation !== null && $quotation['items'] !== []) {
-                return $quotation;
+            return false;
+        } finally {
+            if (is_string($tempImagePath) && file_exists($tempImagePath)) {
+                unlink($tempImagePath);
             }
         }
-
-        return null;
     }
 
-    /**
-     * @param array<string, mixed> $quotation
-     */
-    private function renderExistingQuotation(array $quotation, string $designInstruction, string $chatId): string
-    {
-        $this->validateQuotationForHtml($quotation);
-        $content = [
-            'message' => 'Se generó nuevamente el PDF de la cotización sin modificar sus datos comerciales.',
-            'quotation' => $quotation,
-            'html' => $this->callOpenAiQuestionOnlyHtmlSkeleton(
-                $quotation,
-                $designInstruction,
-                $this->getLatestQuotationHtml($chatId),
-            ),
-        ];
-        $encoded = json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    private function runMaterialsSystemsExtraction(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): bool {
+        $tempImagePath = null;
 
-        if (!is_string($encoded) || $encoded === '') {
-            throw new \RuntimeException('No fue posible serializar la cotización renderizada.');
+        try {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando extracción de materiales y sistemas constructivos.', $this->imageLogContext($message, $image));
+            $contextGeneralJson = $image->getContextGeneraJson();
+            if ($contextGeneralJson === null) {
+                throw new \RuntimeException('La imagen no tiene contexto general para iniciar la fase 2.');
+            }
+
+            $imageBinary = $this->chattoolpdfZipStorage->read($image->getImageKey());
+            if ($imageBinary === '') {
+                throw new \RuntimeException('No fue posible leer la imagen para extraer materiales y sistemas constructivos.');
+            }
+
+            $extension = strtolower(pathinfo($image->getImageName(), PATHINFO_EXTENSION));
+            $tempImagePath = tempnam(sys_get_temp_dir(), 'chattoolpdf_materials_');
+            if ($tempImagePath === false) {
+                throw new \RuntimeException('No fue posible crear el archivo temporal para la fase 2.');
+            }
+
+            unlink($tempImagePath);
+            $tempImagePath .= $extension !== '' ? '.' . $extension : '';
+
+            if (file_put_contents($tempImagePath, $imageBinary) === false) {
+                throw new \RuntimeException('No fue posible guardar la imagen temporal para la fase 2.');
+            }
+
+            $encodedContextGeneral = json_encode(
+                $contextGeneralJson,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+            );
+            if (!is_string($encodedContextGeneral)) {
+                throw new \RuntimeException('No fue posible serializar el contexto general de la fase 1.');
+            }
+
+            $responseContent = $this->analyzeImageWithAi(
+                $this->loadPrompt('image_materials_systems_system_prompt.md'),
+                "Extrae los materiales y sistemas constructivos de esta imagen.\n\nContexto general de la fase 1:\n{$encodedContextGeneral}",
+                $tempImagePath,
+                $imageBinary,
+            );
+            $materialsSystemsJson = $this->decodeJsonContent($responseContent);
+
+            if (!is_array($materialsSystemsJson)) {
+                throw new \RuntimeException(sprintf(
+                    'La IA no devolvió un JSON válido para materiales y sistemas constructivos. Error JSON: %s. Longitud: %d. Respuesta: %s',
+                    json_last_error_msg(),
+                    strlen($responseContent),
+                    $this->truncateAiResponse($responseContent),
+                ));
+            }
+
+            $image->setMaterialsSystemsJson($materialsSystemsJson);
+            $image->setMaterialsSystemsAnalyzed(true);
+            $this->entityManager->persist($image);
+            $this->entityManager->flush();
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] Extracción de materiales y sistemas constructivos completada.', $this->imageLogContext($message, $image));
+            return true;
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible extraer materiales y sistemas constructivos de la imagen.', $this->imageLogContext($message, $image) + [
+                'error' => $exception->getMessage(),
+            ]);
+            return false;
+        } finally {
+            if (is_string($tempImagePath) && file_exists($tempImagePath)) {
+                unlink($tempImagePath);
+            }
         }
-
-        return $encoded;
     }
 
-    /**
-     * @param array<int, array{role: string, content: string}> $history
-     */
-    private function answerConversation(string $question, string $chatId, array $history): string
-    {
-        $messages = $this->buildMessagesWithHistory(
-            $chatId,
-            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
-            $this->getConversationSystemPrompt(),
-            $history,
-        );
-        $response = (new Agent($this->platform, $this->model))->call(new MessageBag(...$messages));
-        $content = trim((string) $response->getContent());
+    private function runGeometryQuantitiesExtraction(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): bool {
+        $tempImagePath = null;
 
-        if ($content === '') {
-            throw new \RuntimeException('La respuesta conversacional no devolvió contenido.');
+        try {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando fase geométrica, metrados y síntesis final.', $this->imageLogContext($message, $image));
+            $contextGeneralJson = $image->getContextGeneraJson();
+            $materialsSystemsJson = $image->getMaterialsSystemsJson();
+            if ($contextGeneralJson === null || $materialsSystemsJson === null) {
+                throw new \RuntimeException('La imagen no tiene los resultados de las fases anteriores para iniciar la fase 3.');
+            }
+
+            $imageBinary = $this->chattoolpdfZipStorage->read($image->getImageKey());
+            if ($imageBinary === '') {
+                throw new \RuntimeException('No fue posible leer la imagen para la fase geométrica.');
+            }
+
+            $extension = strtolower(pathinfo($image->getImageName(), PATHINFO_EXTENSION));
+            $tempImagePath = tempnam(sys_get_temp_dir(), 'chattoolpdf_geometry_');
+            if ($tempImagePath === false) {
+                throw new \RuntimeException('No fue posible crear el archivo temporal para la fase 3.');
+            }
+
+            unlink($tempImagePath);
+            $tempImagePath .= $extension !== '' ? '.' . $extension : '';
+
+            if (file_put_contents($tempImagePath, $imageBinary) === false) {
+                throw new \RuntimeException('No fue posible guardar la imagen temporal para la fase 3.');
+            }
+
+            $phaseContext = json_encode([
+                'context_general' => $contextGeneralJson,
+                'materials_systems' => $materialsSystemsJson,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (!is_string($phaseContext)) {
+                throw new \RuntimeException('No fue posible serializar el contexto de las fases anteriores.');
+            }
+
+            $responseContent = $this->analyzeImageWithAi(
+                $this->loadPrompt('image_geometric_quantities_system_prompt.md'),
+                "Realiza la extracción geométrica, los metrados y la síntesis final de esta imagen.\n\nContexto de las fases anteriores:\n{$phaseContext}",
+                $tempImagePath,
+                $imageBinary,
+            );
+            $geometryQuantitiesJson = $this->decodeJsonContent($responseContent);
+
+            if (!is_array($geometryQuantitiesJson)) {
+                throw new \RuntimeException(sprintf(
+                    'La IA no devolvió un JSON válido para geometría, metrados y síntesis final. Error JSON: %s. Longitud: %d. Respuesta: %s',
+                    json_last_error_msg(),
+                    strlen($responseContent),
+                    $this->truncateAiResponse($responseContent),
+                ));
+            }
+
+            $image->setGeometryQuantitiesJson($geometryQuantitiesJson);
+            $image->setGeometryQuantitiesAnalyzed(true);
+            $this->entityManager->persist($image);
+            $this->entityManager->flush();
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] Fase geométrica, metrados y síntesis final completada.', $this->imageLogContext($message, $image));
+            return true;
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible completar la fase geométrica de la imagen.', $this->imageLogContext($message, $image) + [
+                'error' => $exception->getMessage(),
+            ]);
+            return false;
+        } finally {
+            if (is_string($tempImagePath) && file_exists($tempImagePath)) {
+                unlink($tempImagePath);
+            }
         }
-
-        return $content;
     }
 
-    /**
-     * @param array<int, array{role: string, content: string}> $history
-     */
-    private function createQuotationFromText(string $question, string $chatId, array $history): string
-    {
-        $prompt = $this->getSystemPrompt()
-            . "\n\nEn esta ruta no hay documento adjunto. Usa únicamente datos aportados por el usuario; no atribuyas información a un plano."
-            . "\n\n" . $this->getQuotationDateInstruction();
-        $messages = $this->buildMessagesWithHistory(
-            $chatId,
-            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
-            $prompt,
-            $history,
-        );
-        $response = (new Agent($this->platform, $this->model))->call(new MessageBag(...$messages));
-        $contentArray = $this->normalizeStructuredContent($response->getContent());
-        if ($contentArray === null) {
-            throw new \RuntimeException('La IA no devolvió una cotización válida a partir del texto.');
-        }
+    private function runPreliminaryImageReview(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): ?bool {
+        $tempImagePath = null;
+        try {
+            $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando revisión preliminar.', $this->imageLogContext($message, $image));
+            $imageBinary = $this->chattoolpdfZipStorage->read($image->getImageKey());
+            if ($imageBinary === '') {
+                throw new \RuntimeException('No fue posible leer la imagen para la revisión preliminar.');
+            }
 
-        $this->validateQuotationForHtml($contentArray['quotation']);
-        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
-            $contentArray['quotation'],
-            $question,
-            $this->getLatestQuotationHtml($chatId),
-        );
-        $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $extension = strtolower(pathinfo($image->getImageName(), PATHINFO_EXTENSION));
+            $tempImagePath = tempnam(sys_get_temp_dir(), 'chattoolpdf_review_');
+            if ($tempImagePath === false) {
+                throw new \RuntimeException('No fue posible crear el archivo temporal para revisar la imagen.');
+            }
 
-        if (!is_string($encoded) || $encoded === '') {
-            throw new \RuntimeException('No fue posible serializar la cotización creada por texto.');
-        }
+            unlink($tempImagePath);
+            $tempImagePath .= $extension !== '' ? '.' . $extension : '';
 
-        return $encoded;
-    }
+            if (file_put_contents($tempImagePath, $imageBinary) === false) {
+                throw new \RuntimeException('No fue posible guardar la imagen temporal para revisarla.');
+            }
 
-    private function generateAndStorePdfFromContent(string $content, string $chatId): ?string
-    {
-        $decoded = json_decode(trim($content), true);
-        $html = is_array($decoded) ? trim((string) ($decoded['html'] ?? '')) : '';
+            $systemPrompt = $this->loadPrompt('image_preliminary_review_system_prompt.md');
+            $userPrompt = 'Realiza la revisión preliminar de esta imagen.';
 
-        if ($html === '') {
+            $responseContent = $this->analyzeImageWithAi(
+                $systemPrompt,
+                $userPrompt,
+                $tempImagePath,
+                $imageBinary,
+            );
+
+            $decodedResponse = $this->decodeJsonContent($responseContent);
+            $confidenceScore = is_array($decodedResponse)
+                ? ($decodedResponse['confidence_score'] ?? null)
+                : null;
+            $reasoning = is_array($decodedResponse)
+                ? ($decodedResponse['reasoning'] ?? null)
+                : null;
+            $documentType = is_array($decodedResponse)
+                ? ($decodedResponse['document_type'] ?? null)
+                : null;
+
+            if (
+                !is_array($decodedResponse)
+                || !is_bool($decodedResponse['approved'] ?? null)
+                || !is_int($confidenceScore)
+                || $confidenceScore < 0
+                || $confidenceScore > 10
+                || !is_string($reasoning)
+                || trim($reasoning) === ''
+                || ($documentType !== null && !in_array($documentType, ['plano', 'financiero'], true))
+            ) {
+                throw new \RuntimeException('La IA no devolvió una revisión preliminar válida.');
+            }
+
+            $image->setApproved($decodedResponse['approved']);
+            $image->setDocumentType($documentType);
+            $image->setConfidenceScore($confidenceScore);
+            $image->setReasoning(trim($reasoning));
+            $this->entityManager->persist($image);
+            $this->entityManager->flush();
+
+            $this->logger->info('[ChatToolPdfMessageProcessor] Revisión preliminar completada.', $this->imageLogContext($message, $image) + [
+                'approved' => $decodedResponse['approved'],
+                'document_type' => $documentType,
+            ]);
+            return $decodedResponse['approved'];
+        } catch (\Throwable $exception) {
+            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible completar la revisión preliminar de la imagen.', $this->imageLogContext($message, $image) + [
+                'error' => $exception->getMessage(),
+            ]);
             return null;
+        } finally {
+            if (is_string($tempImagePath) && file_exists($tempImagePath)) {
+                unlink($tempImagePath);
+            }
+        }
+    }
+
+    /**
+     * @return array{chat_id: string, image_key: string, image_number: int}
+     */
+    private function imageLogContext(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdfImage $image,
+    ): array {
+        return [
+            'chat_id' => $message->getChatId(),
+            'image_key' => $image->getImageKey(),
+            'image_number' => $image->getImageNumber(),
+        ];
+    }
+
+    private function analyzeImageWithAi(
+        string $systemPrompt,
+        string $userPrompt,
+        ?string $imagePath,
+        string $imageBinary,
+    ): string {
+        // Ollama es la ruta activa para las pruebas actuales.
+        return $this->ollamaImageAdapter->analyzeImageWithOllama(
+            $systemPrompt,
+            $userPrompt,
+            $imageBinary,
+        );
+
+        // Para usar OpenAI, comenta el bloque anterior y habilita esta línea:
+        // return $this->analyzeImageWithAgent($systemPrompt, $userPrompt, (string) $imagePath);
+    }
+
+    private function analyzeImageWithAgent(
+        string $systemPrompt,
+        string $userPrompt,
+        string $imagePath,
+    ): string {
+        $agent = new Agent($this->platform, $this->model);
+        $response = $agent->call(new MessageBag(
+            new SystemMessage($systemPrompt),
+            new UserMessage(
+                new Text($userPrompt),
+                Image::fromFile($imagePath),
+            ),
+        ));
+
+        return (string) $response->getContent();
+    }
+
+    private function processImage(
+        ChatToolPdfMessage $message,
+        ChatHistoryPdf $history,
+        string $imagePath,
+        string $imageBinary,
+        string $imageKey,
+        string $imageName,
+        int $imageNumber,
+        string $mimeType,
+    ): void {
+        $imageRepository = $this->entityManager->getRepository(ChatHistoryPdfImage::class);
+
+        $storedImage = $imageRepository->findOneBy([
+            'chatHistoryPdf' => $history,
+            'imageKey' => $imageKey,
+        ]);
+
+        if (
+            $storedImage === null
+            || !$this->chattoolpdfZipStorage->fileExists($imageKey)
+        ) {
+            $this->chattoolpdfZipStorage->write($imageKey, $imageBinary);
+
+            if ($storedImage === null) {
+                $this->entityManager->persist(new ChatHistoryPdfImage(
+                    chatHistoryPdf: $history,
+                    imageKey: $imageKey,
+                    imageName: $imageName,
+                    imageNumber: $imageNumber,
+                    mimeType: $mimeType,
+                ));
+            }
+        }
+
+        $this->logger->info('[ChatToolPdfMessageProcessor] Imagen lista para procesar.', [
+            'chat_id' => $message->getChatId(),
+            'image_number' => $imageNumber,
+            'image_name' => $imageName,
+            'image_key' => $imageKey,
+            'image_path' => $imagePath,
+        ]);
+    }
+
+    private function createDocument(ChatToolPdfMessage $message): void
+    {
+        // 1. Obtener historial reciente para dar contexto de los datos (productos, precios, etc.)
+        $historyRecords = $this->getRecentHistory($message->getChatId(), $message->getUserIdentifier(), 12);
+
+        // 2. Cargar el prompt de sistema estricto
+        $messages = [new SystemMessage($this->loadPrompt('content_json_system_prompt.md'))];
+
+        // 3. Reconstruir el historial de la conversación
+        foreach ($historyRecords as $record) {
+            if ($record->getRecordType() === 'user') {
+                $messages[] = new UserMessage(new Text($record->getMessage() ?? ''));
+                continue;
+            }
+
+            $assistantContent = $record->getContent();
+            #if ($record->getContentJson() !== null) {
+            #    // Si hubo un JSON previo, se inyecta para que la IA recuerde el estado de la cotización
+            #    $encodedJson = json_encode($record->getContentJson(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            #    $assistantContent = is_string($encodedJson) ? $encodedJson : $assistantContent;
+            #}
+
+            if ($assistantContent !== null && trim($assistantContent) !== '') {
+                $messages[] = new AssistantMessage(new Text($assistantContent));
+            }
+        }
+
+        // 4. IMPORTANTE: Agregar el mensaje actual del usuario al final del hilo
+        $messages[] = new UserMessage(new Text($message->getMessage()));
+
+        try {
+            // 5. Llamada al LLM
+            $agent = new Agent($this->platform, $this->model);
+            $response = $agent->call(new MessageBag(...$messages));
+            $rawResponse = trim((string) $response->getContent());
+                $this->logger->warning('[ChatToolPdfMessageProcessor] Respuesta pura de la ia', [
+                    $rawResponse,
+                    $messages
+                ]);
+            // 6. Decodificar la respuesta estructurada
+            $decodedResponse = $this->decodeJsonContent($rawResponse);
+
+            if (!is_array($decodedResponse)) {
+                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA no devolvió un JSON válido en createDocument.', [
+                    'raw_response' => $rawResponse
+                ]);
+                $this->dispatchResponse($message, $rawResponse);
+                return;
+            }
+
+            // 7. Extraer las claves definidas en el prompt
+            $content = trim((string) ($decodedResponse['content'] ?? ''));
+            $accionRequerida = $decodedResponse['accion_requerida'] ?? 'request_data';
+            $contentJson = is_array($decodedResponse['content_json'] ?? null)
+                ? $decodedResponse['content_json']
+                : null;
+
+            // Si la IA determina que falta información, contentJson será null y solo se despachará el mensaje de texto.
+            // Si la acción es render_pdf, contentJson contendrá la estructura completa de la cotización.
+            $pdfUrl = null;
+            if ($accionRequerida === 'render_pdf' && $contentJson !== null) {
+                $pdfUrl = $this->renderAndStoreQuotationPdf(
+                    $contentJson,
+                    $message->getChatId(),
+                );
+            }
+
+            $this->dispatchResponse(
+                message: $message,
+                content: $content !== '' ? $content : 'Generando documento...',
+                contentJson: $contentJson,
+                pdfUrl: $pdfUrl,
+            );
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] Error al crear el documento.', [
+                'error' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
+            ]);
+            $this->dispatchResponse($message, 'Ocurrió un error interno al intentar estructurar el documento.');
+        }
+    }
+
+    /**
+     * Renderiza la cotización con la plantilla fija, la convierte a PDF con
+     * Gotenberg, la guarda en MinIO y devuelve la clave del objeto generado.
+     *
+     * @param array<string, mixed> $contentJson
+     */
+    private function renderAndStoreQuotationPdf(array $contentJson, string $chatId): string
+    {
+        $html = trim($this->twig->render('plantillaCotizacionPdf.html.twig', $contentJson));
+        if ($html === '') {
+            throw new \RuntimeException('La plantilla de cotización no devolvió HTML.');
         }
 
         $tempHtmlPath = tempnam(sys_get_temp_dir(), 'quotation_html_');
@@ -381,8 +1040,6 @@ final readonly class ChatToolPdfMessageProcessor
                 ));
             }
 
-            // Se guarda como los adjuntos: en chattoolpdf.storage.attach_pdf y se conserva
-            // la clave del objeto, no una URL interna del contenedor.
             $pdfPath = bin2hex(random_bytes(32)) . '.pdf';
             $this->attachPdfStorage->write(
                 $pdfPath,
@@ -390,10 +1047,9 @@ final readonly class ChatToolPdfMessageProcessor
                 ['visibility' => 'public'],
             );
 
-            $this->logger->info('[ChatToolPdfMessageProcessor] PDF HTML generado y guardado en MinIO.', [
+            $this->logger->info('[ChatToolPdfMessageProcessor] PDF de cotización generado y guardado en MinIO.', [
                 'chat_id' => $chatId,
                 'pdf_key' => $pdfPath,
-                'bucket' => 'planos-entrada',
             ]);
 
             return $pdfPath;
@@ -404,610 +1060,214 @@ final readonly class ChatToolPdfMessageProcessor
         }
     }
 
-    private function hasGeneratedHtml(string $content): bool
+    private function editDocument(ChatToolPdfMessage $message): void
     {
-        $decoded = json_decode(trim($content), true);
+        // 1. Buscar ÚNICAMENTE el último estado válido del documento (el último JSON generado)
+        $latestJson = $this->findLatestContentJson($message->getChatId(), $message->getUserIdentifier());
 
-        return is_array($decoded) && trim((string) ($decoded['html'] ?? '')) !== '';
-    }
-
-    private function saveConversationHistory(string $chatId, string $userText, string $aiContent): void
-    {
-        try {
-            $this->chatContextRetriever->saveMessage($chatId, 'user', $userText);
-        } catch (\Throwable $exception) {
-            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible guardar el mensaje del usuario en Qdrant.', [
-                'chat_id' => $chatId,
-                'error' => $exception->getMessage(),
-            ]);
+        if ($latestJson === null) {
+            $this->dispatchResponse($message, 'esto se debe de actualizar No encontré una cotización activa para editar. Por favor, crea una primero.');
+            return;
         }
 
-        try {
-            $decoded = json_decode(trim($aiContent), true);
-            $html = is_array($decoded) ? trim((string) ($decoded['html'] ?? '')) : '';
+        // 2. Preparar el contexto preciso y sin redundancias
+        $messages = [
+            // A. Reglas de negocio
+            new SystemMessage($this->loadPrompt('edit_content_json_system_prompt.md')),
 
-            if ($html !== '' && is_array($decoded)) {
-                unset($decoded['html']);
-                $jsonContent = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                if (is_string($jsonContent) && $jsonContent !== '') {
-                    $this->chatContextRetriever->saveMessage($chatId, 'assistant', $jsonContent, $jsonContent);
-                    $this->chatContextRetriever->saveMessage($chatId, 'assistant_html', $html, $jsonContent);
-                }
-            } else {
-                $this->chatContextRetriever->saveMessage($chatId, 'assistant', $aiContent, $aiContent);
-            }
-        } catch (\Throwable $exception) {
-            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible guardar la respuesta de la IA en Qdrant.', [
-                'chat_id' => $chatId,
-                'error' => $exception->getMessage(),
-            ]);
-        }
-    }
+            // B. La fuente de verdad absoluta (El último JSON tal cual está en DB)
+            new AssistantMessage(new Text(json_encode($latestJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))),
 
-    private function answerQuestionOnly(string $question, string $chatId): string
-    {
-        return $this->callOpenAiQuestionOnly($this->normalizeQuestion($question), $chatId);
-    }
-
-    private function analyzeZipBinary(string $zipBinary, string $question, string $chatId, bool $analysisOnly): string
-    {
-        $imagePaths = $this->extractImagesToTempFiles($zipBinary);
-
-        try {
-            if ([] === $imagePaths) {
-                return $analysisOnly
-                    ? 'No fue posible extraer imágenes legibles del documento adjunto.'
-                    : $this->answerQuestionOnly($question, $chatId);
-            }
-
-            return $this->callOpenAiWithImages(
-                $this->normalizeQuestion($question),
-                $imagePaths,
-                $chatId,
-                $analysisOnly,
-            );
-        } finally {
-            // Limpieza garantizada de las imágenes temporales
-            foreach ($imagePaths as $path) {
-                if (file_exists($path)) {
-                    unlink($path);
-                }
-            }
-        }
-    }
-
-    /**
-     * @param array<int, string> $imagePaths
-     */
-    private function callOpenAiQuestionOnly(string $question, string $chatId): string
-    {
-        $agent = new Agent($this->platform, $this->model);
-        $history = $this->getConversationHistory($chatId);
-        $prompt = $this->getQuestionSystemPrompt() . "\n\n" . $this->getQuotationDateInstruction();
-
-        $this->logger->info('[ChatToolPdfMessageProcessor] Consultando historial para pregunta sin adjunto.', [
-            'chat_id' => $chatId,
-            'history_messages' => count($history),
-            'has_history' => $history !== [],
-        ]);
-
-        $messages = $this->buildMessagesWithHistory(
-            $chatId,
-            new UserMessage(new Text($question !== '' ? $question : self::DEFAULT_CONVERSATION_QUESTION)),
-            $prompt,
-            $history,
-        );
-
-        $response = $agent->call(new MessageBag(...$messages));
-        $content = trim((string) $response->getContent());
-
-        if ($content === '') {
-            throw new \RuntimeException('La respuesta de OpenAI no devolvio contenido.');
-        }
-
-        $contentArray = $this->normalizeStructuredContent($content);
-
-        if ($contentArray !== null && !empty($contentArray['quotation'])) {
-            $this->logger->info('[ChatToolPdfMessageProcessor] Modificación detectada. Iniciando generación de HTML (Paso 2).');
-
-            $this->validateQuotationForHtml($contentArray['quotation']);
-            $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
-                $contentArray['quotation'],
-                $question,
-                $this->getLatestQuotationHtml($chatId),
-            );
-            $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-            if (!is_string($encoded) || $encoded === '') {
-                throw new \RuntimeException('No fue posible serializar la cotización modificada.');
-            }
-
-            return $encoded;
-        }
-
-        $this->logger->info('[ChatToolPdfMessageProcessor] Respuesta de OpenAI sin adjuntos recibida.', [
-            'content_preview' => mb_substr($content, 0, 1000),
-        ]);
-
-        return $content;
-    }
-
-    /**
-     * Genera el HTML inyectando la cotización en el esqueleto definido.
-     *
-     * @param array<string, mixed> $quotationData
-     */
-    private function callOpenAiQuestionOnlyHtmlSkeleton(array $quotationData, string $userInstruction = '', ?string $previousHtml = null): string
-    {
-        $agent = new Agent($this->platform, $this->model);
-        $quotationJson = json_encode($quotationData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-        if (!is_string($quotationJson) || $quotationJson === '') {
-            throw new \RuntimeException('No fue posible serializar los datos de la cotización para generar el HTML.');
-        }
-
-        $userPrompt = sprintf(
-            "Instrucción visual del usuario:\n%s\n\nHTML base anterior para editar, si existe:\n%s\n\nDatos de la cotización para renderizar:\n%s",
-            $userInstruction !== '' ? $userInstruction : 'Mantén un diseño profesional usando el esqueleto base.',
-            $previousHtml !== null && trim($previousHtml) !== '' ? $previousHtml : 'No existe un HTML previo.',
-            $quotationJson,
-        );
-        $messages = new MessageBag(
-            new SystemMessage($this->getHtmlSkeletonPrompt()),
-            new UserMessage(new Text($userPrompt)),
-        );
-
-        $response = $agent->call($messages);
-        $html = trim((string) $response->getContent());
-        $html = preg_replace('/^```html\s*/i', '', $html) ?? $html;
-        $html = preg_replace('/\s*```$/', '', $html) ?? $html;
-        $html = trim($html);
-
-        if ($html === '') {
-            throw new \RuntimeException('La respuesta de OpenAI para el HTML no devolvió contenido.');
-        }
-
-        return $html;
-    }
-
-    /**
-     * Valida los tipos críticos antes de entregarlos al generador HTML.
-     *
-     * @param array<string, mixed> $quotation
-     */
-    private function validateQuotationForHtml(array $quotation): void
-    {
-        if (trim((string) ($quotation['currency'] ?? '')) === '') {
-            throw new \RuntimeException('La cotización no contiene una moneda válida.');
-        }
-
-        foreach (['issuer', 'client', 'commercial_terms', 'items'] as $field) {
-            if (!is_array($quotation[$field] ?? null)) {
-                throw new \RuntimeException(sprintf(
-                    'La cotización no contiene una estructura válida en el campo "%s".',
-                    $field,
-                ));
-            }
-        }
-
-        if ($quotation['items'] === []) {
-            throw new \RuntimeException('La cotización debe contener al menos un ítem.');
-        }
-
-        foreach (['subtotal', 'taxes', 'discounts', 'total'] as $field) {
-            if (!is_int($quotation[$field] ?? null) && !is_float($quotation[$field] ?? null)) {
-                throw new \RuntimeException(sprintf(
-                    'El campo numérico "%s" de la cotización no es válido.',
-                    $field,
-                ));
-            }
-        }
-
-        $itemNumericFields = [
-            'quantity',
-            'unit_price',
-            'discount_percentage',
-            'tax_percentage',
-            'subtotal',
-            'total',
+            // C. Lo que el usuario quiere cambiar
+            new UserMessage(new Text($message->getMessage()))
         ];
 
-        foreach ($quotation['items'] as $itemIndex => $item) {
-            if (!is_array($item)) {
-                throw new \RuntimeException(sprintf(
-                    'El ítem %d de la cotización no tiene una estructura válida.',
-                    $itemIndex + 1,
-                ));
+        try {
+            // 3. Llamada al LLM
+            $agent = new Agent($this->platform, $this->model);
+            $response = $agent->call(new MessageBag(...$messages));
+            $rawResponse = trim((string) $response->getContent());
+
+            $decodedResponse = $this->decodeJsonContent($rawResponse);
+
+            if (!is_array($decodedResponse)) {
+                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA no devolvió un JSON válido en editDocument.', [
+                    'raw_response' => $rawResponse
+                ]);
+                $this->dispatchResponse($message, 'No pude procesar la edición correctamente. Intenta de nuevo.');
+                return;
             }
 
-            if (trim((string) ($item['description'] ?? '')) === '') {
-                throw new \RuntimeException(sprintf('El ítem %d no contiene descripción.', $itemIndex + 1));
+            // 4. Extracción
+            $content = trim((string) ($decodedResponse['content'] ?? ''));
+            $accionRequerida = $decodedResponse['accion_requerida'] ?? 'request_data';
+            $contentJson = is_array($decodedResponse['content_json'] ?? null)
+                ? $decodedResponse['content_json']
+                : null;
+            $pdfUrl = null;
+
+            if ($accionRequerida === 'render_pdf' && $contentJson !== null) {
+                $pdfUrl = $this->renderAndStoreQuotationPdf(
+                    $contentJson,
+                    $message->getChatId(),
+                );
             }
 
-            if ((float) ($item['quantity'] ?? 0) <= 0) {
-                throw new \RuntimeException(sprintf('La cantidad del ítem %d debe ser mayor que cero.', $itemIndex + 1));
-            }
-
-            foreach ($itemNumericFields as $field) {
-                if (!is_int($item[$field] ?? null) && !is_float($item[$field] ?? null)) {
-                    throw new \RuntimeException(sprintf(
-                        'El campo numérico "%s" del ítem %d no es válido.',
-                        $field,
-                        $itemIndex + 1,
-                    ));
-                }
-            }
-        }
-    }
-
-    private function getQuotationDateInstruction(): string
-    {
-        $currentDate = new \DateTimeImmutable('now', new \DateTimeZone('America/Bogota'));
-
-        return sprintf(
-            'Solo cuando la intención sea crear o editar una cotización: la fecha actual es %s. Si el usuario no especifica fecha o vigencia, usa esa fecha y una vigencia estándar de 15 días. Si especifica una fecha o plazo, respétalo. Registra el resultado en date y valid_until. Para respuestas conversacionales, ignora por completo esta instrucción temporal y no devuelvas JSON.',
-            $currentDate->format('Y-m-d'),
-        );
-    }
-
-    /**
-     * @param array<int, string> $imagePaths
-     */
-    private function callOpenAiWithImages(string $question, array $imagePaths, string $chatId, bool $analysisOnly): string
-    {
-        $agent = new Agent($this->platform, $this->model);
-        $history = $this->getConversationHistory($chatId);
-        $imageAnalyses = [];
-        $maxImageAnalyses = max(1, $this->maxImageAnalyses);
-        $imagesToAnalyze = array_slice($imagePaths, 0, $maxImageAnalyses);
-
-        if (count($imagePaths) > count($imagesToAnalyze)) {
-            $this->logger->warning('[ChatToolPdfMessageProcessor] Se limitó la cantidad de imágenes analizadas para proteger los límites de la API.', [
-                'chat_id' => $chatId,
-                'total_images' => count($imagePaths),
-                'analyzed_images' => count($imagesToAnalyze),
-                'omitted_images' => count($imagePaths) - count($imagesToAnalyze),
+            $this->dispatchResponse(
+                message: $message,
+                content: $content !== '' ? $content : 'Cotización actualizada.',
+                contentJson: $contentJson,
+                pdfUrl: $pdfUrl,
+            );
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] Error al editar el documento.', [
+                'error' => $exception->getMessage(),
             ]);
+            $this->dispatchResponse($message, 'Ocurrió un error interno al intentar editar la cotización.');
         }
-
-        $this->logger->info('[ChatToolPdfMessageProcessor] Preparando análisis consolidado con historial.', [
-            'chat_id' => $chatId,
-            'history_messages' => count($history),
-            'images' => count($imagesToAnalyze),
-        ]);
-
-        foreach ($imagesToAnalyze as $index => $path) {
-            $imageNumber = $index + 1;
-            $imageMessage = new UserMessage(
-                new Text(sprintf(
-                    "Analiza la imagen %d para esta solicitud: %s",
-                    $imageNumber,
-                    $question !== '' ? $question : self::DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION,
-                )),
-                Image::fromFile($path),
-            );
-
-            $imageMessages = $this->buildMessagesWithHistory(
-                $chatId,
-                $imageMessage,
-                $this->getImageAnalysisSystemPrompt(),
-                $history,
-            );
-            $imageResponse = $agent->call(new MessageBag(...$imageMessages));
-            $imageAnalysis = trim((string) $imageResponse->getContent());
-
-            if ($imageAnalysis === '') {
-                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA no devolvió análisis para una imagen.', [
-                    'chat_id' => $chatId,
-                    'image_number' => $imageNumber,
-                ]);
-                continue;
-            }
-
-            $structuredAnalysis = $this->decodeJsonContent($imageAnalysis);
-            if (!is_array($structuredAnalysis)) {
-                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA no devolvió JSON válido para una imagen; se conservará un resumen de respaldo.', [
-                    'chat_id' => $chatId,
-                    'image_number' => $imageNumber,
-                ]);
-                $structuredAnalysis = [
-                    'summary' => $imageAnalysis,
-                    'spaces' => [],
-                    'measurements' => [],
-                    'materials' => [],
-                    'quantities' => [],
-                    'installations' => [],
-                    'notes' => 'La respuesta intermedia no llegó en JSON válido.',
-                ];
-            }
-
-            $imageAnalyses[] = [
-                'image_number' => $imageNumber,
-                'analysis' => $structuredAnalysis,
-            ];
-        }
-
-        if ($imageAnalyses === []) {
-            throw new \RuntimeException('La IA no devolvió análisis para ninguna imagen del plano.');
-        }
-
-        $analysesJson = json_encode($imageAnalyses, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (!is_string($analysesJson) || $analysesJson === '') {
-            throw new \RuntimeException('No fue posible consolidar los análisis individuales de las imágenes.');
-        }
-
-        $coverage = [
-            'total_pages' => count($imagePaths),
-            'analyzed_pages' => count($imagesToAnalyze),
-            'omitted_pages' => count($imagePaths) - count($imagesToAnalyze),
-            'is_complete' => count($imagePaths) === count($imagesToAnalyze),
-        ];
-        $coverageJson = json_encode($coverage, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (!is_string($coverageJson) || $coverageJson === '') {
-            throw new \RuntimeException('No fue posible serializar la cobertura del documento.');
-        }
-
-        $finalPrompt = sprintf(
-            "Solicitud actual:\n%s\n\ndocument_coverage:\n%s\n\nAnálisis individuales:\n%s",
-            $question !== '' ? $question : self::DEFAULT_QUOTATION_FROM_DOCUMENT_QUESTION,
-            $coverageJson,
-            $analysesJson,
-        );
-        if ($analysisOnly) {
-            $summaryMessages = $this->buildMessagesWithHistory(
-                $chatId,
-                new UserMessage(new Text($finalPrompt)),
-                $this->getDocumentSummarySystemPrompt(),
-                [],
-            );
-            $summary = trim((string) $agent->call(new MessageBag(...$summaryMessages))->getContent());
-
-            if ($summary === '') {
-                throw new \RuntimeException('La IA no devolvió el resumen consolidado del documento.');
-            }
-
-            return $summary;
-        }
-
-        $messages = $this->buildMessagesWithHistory(
-            $chatId,
-            new UserMessage(new Text($finalPrompt)),
-            $this->getSystemPrompt()
-                . "\n\n" . $this->getQuotationConsolidationSystemPrompt()
-                . "\n\n" . $this->getQuotationDateInstruction(),
-            $history,
-        );
-
-        $response = $agent->call(new MessageBag(...$messages));
-
-        $content = $response->getContent();
-        $contentArray = $this->normalizeStructuredContent($content);
-
-        if (null === $contentArray) {
-            throw new \RuntimeException('La respuesta de OpenAI no devolvio una estructura de cotizacion valida.');
-        }
-
-        $this->validateQuotationForHtml($contentArray['quotation']);
-        $this->logger->info('[ChatToolPdfMessageProcessor] Iniciando generación de HTML (Paso 2).');
-        $contentArray['html'] = $this->callOpenAiQuestionOnlyHtmlSkeleton(
-            $contentArray['quotation'],
-            $question,
-            $this->getLatestQuotationHtml($chatId),
-        );
-
-        $encoded = json_encode($contentArray, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (!is_string($encoded) || '' === $encoded) {
-            throw new \RuntimeException('No fue posible serializar la respuesta final.');
-        }
-
-        $this->logger->info('[ChatToolPdfMessageProcessor] Respuesta de OpenAI recibida.', [
-            'content_preview' => mb_substr($encoded, 0, 1000),
-            'has_quotation' => null !== $contentArray['quotation'],
-        ]);
-
-        return $encoded;
     }
 
-    /**
-     * Construye los mensajes en el orden que necesita el agente:
-     * instrucciones del sistema, historial cronológico y mensaje actual.
-     *
-     * @return array<int, SystemMessage|UserMessage|AssistantMessage>
-     */
-    /**
-     * @param array<int, array{role: string, content: string}>|null $history
-     * @return array<int, SystemMessage|UserMessage|AssistantMessage>
-     */
-    private function buildMessagesWithHistory(string $chatId, UserMessage $currentMessage, string $systemPrompt, ?array $history = null): array
+    private function conversation(ChatToolPdfMessage $message): void
     {
+        $historyRecords = $this->getRecentHistory($message->getChatId(), $message->getUserIdentifier(), 6);
+        $systemPrompt = $this->loadPrompt('conversation_strict_system_prompt.md');
         $messages = [new SystemMessage($systemPrompt)];
 
-        foreach ($history ?? $this->getConversationHistory($chatId) as $historyMessage) {
-            $content = trim((string) ($historyMessage['content'] ?? ''));
-            if ($content === '') {
-                continue;
-            }
-
-            $role = strtolower(trim((string) ($historyMessage['role'] ?? '')));
-            if ($role === 'assistant') {
-                $messages[] = new AssistantMessage(new Text($content));
-                continue;
-            }
-
-            if ($role === 'user') {
-                $messages[] = new UserMessage(new Text($content));
+        foreach ($historyRecords as $record) {
+            if ($record->getRecordType() === 'user') {
+                $messages[] = new UserMessage(new Text($record->getMessage() ?? ''));
+            } elseif ($record->getRecordType() === 'assistant') {
+                $messages[] = new AssistantMessage(new Text($record->getContent() ?? ''));
             }
         }
 
-        $messages[] = $currentMessage;
+        $messages[] = new UserMessage(new Text($message->getMessage()));
 
-        return $messages;
-    }
-
-    /**
-     * El historial es contextual; si Qdrant no está disponible no debe impedir
-     * que el agente procese el mensaje actual.
-     *
-     * @return array<int, array{role: string, content: string}>
-     */
-    private function getConversationHistory(string $chatId): array
-    {
         try {
-            return $this->chatContextRetriever->getHistoryBySession($chatId, max(1, $this->maxHistoryMessages));
+            $agent = new Agent($this->platform, $this->model);
+            $response = $agent->call(new MessageBag(...$messages));
+            $aiResponseText = trim((string) $response->getContent());
+
+            $this->dispatchResponse($message, $aiResponseText);
         } catch (\Throwable $exception) {
-            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible recuperar el historial desde Qdrant.', [
-                'chat_id' => $chatId,
+            $this->logger->error('[ChatToolPdfMessageProcessor] Error en la conversación.', [
                 'error' => $exception->getMessage(),
             ]);
-
-            return [];
+            $this->dispatchResponse($message, 'Ocurrió un error al procesar la conversación.');
         }
     }
 
-    private function getLatestQuotationHtml(string $chatId): ?string
+    // Clasificación de la pregunta mediante el prompt de intenciones, inyectando historial.
+    private function classifyIntent(string $userText, array $historyRecords): string
     {
         try {
-            return $this->chatContextRetriever->getLatestContentBySessionAndRole($chatId, 'assistant_html');
-        } catch (\Throwable $exception) {
-            $this->logger->warning('[ChatToolPdfMessageProcessor] No fue posible recuperar el HTML previo desde Qdrant.', [
-                'chat_id' => $chatId,
-                'error' => $exception->getMessage(),
-            ]);
+            $systemContent = $this->loadPrompt('intent_classification_system_prompt.md');
 
-            return null;
-        }
-    }
+            // Construir contexto del historial para que la IA tome una decisión informada
+            $historyContext = "CONTEXTO HISTÓRICO RECIENTE:\n";
+            if (empty($historyRecords)) {
+                $historyContext .= "No hay historial previo en esta sesión.\n";
+            } else {
+                foreach ($historyRecords as $record) {
+                    $role = $record->getRecordType() === 'user' ? 'Usuario' : 'Asistente';
+                    $hasAttachment = $record->getAttachmentKey() ? " [Envió un archivo adjunto]" : "";
+                    $msgText = $record->getMessage() ?? $record->getContent() ?? '';
+                    // Limitamos la longitud del mensaje histórico para no saturar tokens
+                    $msgText = mb_substr(trim($msgText), 0, 150) . (mb_strlen($msgText) > 150 ? '...' : '');
 
-    private function convertAndStorePdf(string $attachmentPath, ChatToolPdfMessage $message): string
-    {
-        $pdfBinary = $this->attachPdfStorage->read($attachmentPath);
-        $tempPdfPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . uniqid('pdf_to_convert_', true) . '.pdf';
+                    $historyContext .= "- {$role}{$hasAttachment}: {$msgText}\n";
+                }
+            }
+            $systemContent .= "\n\n" . $historyContext;
 
-        if (file_put_contents($tempPdfPath, $pdfBinary) === false) {
-            throw new \RuntimeException('No fue posible escribir el archivo temporal en el disco.');
-        }
 
-        try {
-            $formFields = [
-                'fileInput' => DataPart::fromPath($tempPdfPath, 'documento.pdf', 'application/pdf'),
-                'pageNumbers' => 'all',
-                'imageFormat' => 'jpeg',
-                'singleOrMultiple' => 'multiple',
-                'colorType' => 'color',
-                'dpi' => '300', // Resolución perfecta para gpt-4o-mini
+
+            $agent = new Agent($this->platform, $this->model);
+            $response = $agent->call(new MessageBag(
+                new SystemMessage($systemContent),
+                new UserMessage(new Text($userText)),
+            ));
+
+            $decoded = $this->decodeJsonContent((string) $response->getContent());
+            $intent = is_array($decoded) ? (string) ($decoded['intent'] ?? '') : '';
+
+            $validIntents = [
+                self::INTENT_CONVERSATION,
+                self::INTENT_ANALYZE_DOCUMENT,
+                self::INTENT_CREATE_DOCUMENT,
+                self::INTENT_EDIT_DOCUMENT,
+                self::INTENT_NO_UNDERSTAND_QUESTION,
             ];
 
-            $formData = new FormDataPart($formFields);
-            $response = $this->httpClient->request('POST', $this->stirlingEndpoint, [
-                'headers' => $formData->getPreparedHeaders()->toArray(),
-                'body' => $formData->bodyToIterable(),
+            if (!in_array($intent, $validIntents, true)) {
+                $this->logger->warning('[ChatToolPdfMessageProcessor] La IA devolvió una intención inválida, malformada o vacía.', [
+                    'raw_response' => (string) $response->getContent(),
+                    'parsed_intent' => $intent,
+                ]);
+
+                return self::INTENT_NO_UNDERSTAND_QUESTION;
+            }
+            $this->logger->info('[ChatToolPdfMessageProcessor] systemContent.', [
+                $systemContent,
+                $intent
+            ]);
+            return $intent;
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] Falló el clasificador de intención por excepción.', [
+                'error' => $exception->getMessage(),
             ]);
 
-            if (200 !== $response->getStatusCode()) {
-                throw new \RuntimeException(sprintf('Stirling devolvió status %d: %s', $response->getStatusCode(), $response->getContent(false)));
-            }
-
-            $zipBinaryContent = $response->getContent();
-            $zipPath = $this->buildZipPath($attachmentPath);
-
-            $this->chattoolpdfZipStorage->write($zipPath, $zipBinaryContent);
-
-            $loger = new Loger($zipPath, $message->getCreatedAt());
-            $this->entityManager->persist($loger);
-            $this->entityManager->flush();
-
-            $this->logger->info('[ChatToolPdfMessageProcessor] PDF convertido con Stirling.', [
-                'attachment_path' => $attachmentPath,
-                'zip_path' => $zipPath,
-            ]);
-
-            return $zipBinaryContent;
-        } finally {
-            if (file_exists($tempPdfPath)) {
-                unlink($tempPdfPath);
-            }
+            return self::INTENT_NO_UNDERSTAND_QUESTION;
         }
+    }
+
+    // Método auxiliar para evitar duplicar la lógica de Doctrine
+    private function getRecentHistory(string $chatId, string $userIdentifier, int $limit): array
+    {
+        return $this->entityManager->getRepository(ChatHistoryPdf::class)
+            ->findBy(
+                [
+                    'chatId' => $chatId,
+                    'userIdentifier' => $userIdentifier,
+                ],
+                ['createdAt' => 'ASC'],
+                $limit
+            );
     }
 
     /**
-     * Extrae las imágenes a disco en lugar de RAM para proteger el servidor.
-     * @return array<int, string>
+     * Obtiene el JSON de la última respuesta del asistente que generó una cotización.
+     *
+     * @return array<string, mixed>|null
      */
-    private function extractImagesToTempFiles(string $zipBinary): array
+   private function findLatestContentJson(string $chatId, string $userIdentifier): ?array
     {
-        if ('' === $zipBinary) {
-            return [];
-        }
+        $chatId = trim($chatId);
+        $userIdentifier = trim($userIdentifier);
 
-        $tempZipPath = tempnam(sys_get_temp_dir(), 'stirling_zip_');
-        if ($tempZipPath === false) {
-            return [];
-        }
+        $history = $this->entityManager->getRepository(ChatHistoryPdf::class)
+            ->createQueryBuilder('h')
+            ->where('h.chatId = :chatId')
+            ->andWhere('h.userIdentifier = :userIdentifier')
+            ->andWhere('h.contentJson IS NOT NULL')
+            ->setParameter('chatId', $chatId)
+            ->setParameter('userIdentifier', $userIdentifier)
+            ->orderBy('h.createdAt', 'DESC')
+            ->addOrderBy('h.id', 'DESC')
+            ->setMaxResults(1) // Trae estrictamente el último
+            ->getQuery()
+            ->getOneOrNullResult();
 
-        $tempZipPath .= '.zip';
-        file_put_contents($tempZipPath, $zipBinary);
+        $contentJson = $history instanceof ChatHistoryPdf
+            ? $history->getContentJson()
+            : null;
 
-        $imagePaths = [];
-
-        try {
-            $zip = new \ZipArchive();
-            if ($zip->open($tempZipPath) !== true) {
-                return [];
-            }
-
-            for ($i = 0; $i < $zip->numFiles; ++$i) {
-                $entryName = $zip->getNameIndex($i);
-                if (!is_string($entryName) || !preg_match('/\.(jpe?g|png|webp)$/i', $entryName)) {
-                    continue;
-                }
-
-                $imageBinary = $zip->getFromIndex($i);
-                if ($imageBinary === false || $imageBinary === '') {
-                    continue;
-                }
-
-                $extension = strtolower(pathinfo($entryName, PATHINFO_EXTENSION));
-                $tempImagePath = tempnam(sys_get_temp_dir(), 'stirling_img_');
-                if ($tempImagePath !== false) {
-                    $tempImagePath .= '.' . ($extension ?: 'jpg');
-                    file_put_contents($tempImagePath, $imageBinary);
-                    $imagePaths[] = $tempImagePath;
-                }
-            }
-        } finally {
-            if (file_exists($tempZipPath)) {
-                unlink($tempZipPath);
-            }
-        }
-
-        return $imagePaths;
+        return is_array($contentJson) ? $contentJson : null;
     }
 
-    private function dispatchResponse(ChatToolPdfMessage $message, ?string $attachmentPath, ?string $content = null, ?string $pdfUrl = null): void
+    private function loadPrompt(string $promptName): string
     {
-        $resolvedContent = $content !== null && trim($content) !== '' ? $content : $message->getMessage();
-
-        $this->logger->info('[ChatToolPdfMessageProcessor] Dispatching response content.', [
-            'chat_id' => $message->getChatId(),
-            'attachment_path' => $attachmentPath,
-            'content_preview' => mb_substr($resolvedContent, 0, 500),
-        ]);
-
-        $this->messageBus->dispatch(new ChatToolIAPdfResponse(
-            chatId: $message->getChatId(),
-            userIdentifier: $message->getUserIdentifier(),
-            content: $resolvedContent,
-            pdfUrl: $pdfUrl,
-            mercureTopic: $message->getMercureTopic(),
-            originalNameAttachment: $attachmentPath !== null ? basename($attachmentPath) : null,
-            attachmentPath: $message->getAttachmentKey(),
-            createdAt: $message->getCreatedAt(),
-        ));
-    }
-
-    private function buildZipPath(string $attachmentPath): string
-    {
-        return preg_replace('/\.pdf$/i', '', $attachmentPath) . '.stirling.zip';
+        return $this->promptLoader->load('chattoolpdf/' . $promptName);
     }
 
     private function normalizeQuestion(string $question): string
@@ -1015,132 +1275,13 @@ final readonly class ChatToolPdfMessageProcessor
         return trim($question);
     }
 
-    /**
-     * @param mixed $content
-     * @return array{message: string, quotation: array<string, mixed>}|null
-     */
-    private function normalizeStructuredContent(mixed $content): ?array
-    {
-        if (is_string($content)) {
-            $content = $this->decodeJsonContent($content);
-        } elseif (is_object($content)) {
-            $content = json_decode(json_encode($content, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
-        }
-
-        if (!is_array($content)) {
-            return null;
-        }
-
-        $message = trim((string) ($content['message'] ?? ''));
-        $quotation = $this->normalizeQuotationContent($content['quotation'] ?? null);
-
-        if ($quotation === null) {
-            return null;
-        }
-
-        if ($message === '') {
-            $message = self::DEFAULT_QUOTATION_MESSAGE;
-            $this->logger->warning('[ChatToolPdfMessageProcessor] La respuesta estructurada no incluía message; se aplicó un valor predeterminado.');
-        }
-
-        return [
-            'message' => $message,
-            'quotation' => $quotation,
-        ];
-    }
-
-    /**
-     * @param mixed $quotation
-     * @return array<string, mixed>|null
-     */
-    private function normalizeQuotationContent(mixed $quotation): ?array
-    {
-        if (is_string($quotation)) {
-            $quotation = $this->decodeJsonContent($quotation);
-        } elseif (is_object($quotation)) {
-            $quotation = json_decode(json_encode($quotation, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
-        }
-
-        if (!is_array($quotation)) {
-            return null;
-        }
-
-        $normalized = [
-            'quotation_number' => $this->normalizeString($quotation['quotation_number'] ?? null),
-            'status' => $this->normalizeString($quotation['status'] ?? null),
-            'date' => $this->normalizeString($quotation['date'] ?? null),
-            'valid_until' => $this->normalizeString($quotation['valid_until'] ?? null),
-            'currency' => $this->normalizeString($quotation['currency'] ?? null),
-            'issuer' => $this->normalizeParty($quotation['issuer'] ?? null, false),
-            'client' => $this->normalizeParty($quotation['client'] ?? null, true),
-            'commercial_terms' => $this->normalizeCommercialTerms($quotation['commercial_terms'] ?? null),
-            'items' => $this->normalizeItems($quotation['items'] ?? null),
-            'subtotal' => $this->normalizeNumber($quotation['subtotal'] ?? null),
-            'taxes' => $this->normalizeNumber($quotation['taxes'] ?? null),
-            'discounts' => $this->normalizeNumber($quotation['discounts'] ?? null),
-            'total' => $this->normalizeNumber($quotation['total'] ?? null),
-            'notes' => $this->normalizeString($quotation['notes'] ?? null),
-        ];
-
-        return $this->recalculateQuotationTotals($normalized);
-    }
-
-    /**
-     * Recalcula únicamente valores matemáticos; las fechas siguen siendo
-     * responsabilidad del modelo según la instrucción del usuario.
-     *
-     * @param array<string, mixed> $quotation
-     * @return array<string, mixed>
-     */
-    private function recalculateQuotationTotals(array $quotation): array
-    {
-        $subtotal = 0.0;
-        $discounts = 0.0;
-        $taxes = 0.0;
-        $total = 0.0;
-
-        foreach ($quotation['items'] as $index => $item) {
-            $quantity = max(0.0, (float) ($item['quantity'] ?? 0));
-            $unitPrice = max(0.0, (float) ($item['unit_price'] ?? 0));
-            $discountPercentage = min(100.0, max(0.0, (float) ($item['discount_percentage'] ?? 0)));
-            $taxPercentage = min(100.0, max(0.0, (float) ($item['tax_percentage'] ?? 0)));
-            $itemSubtotal = $quantity * $unitPrice;
-            $itemDiscount = $itemSubtotal * ($discountPercentage / 100);
-            $taxableBase = $itemSubtotal - $itemDiscount;
-            $itemTaxes = $taxableBase * ($taxPercentage / 100);
-            $itemTotal = $taxableBase + $itemTaxes;
-
-            $quotation['items'][$index]['quantity'] = $quantity;
-            $quotation['items'][$index]['unit_price'] = $unitPrice;
-            $quotation['items'][$index]['discount_percentage'] = $discountPercentage;
-            $quotation['items'][$index]['tax_percentage'] = $taxPercentage;
-            $quotation['items'][$index]['subtotal'] = round($itemSubtotal, 2);
-            $quotation['items'][$index]['total'] = round($itemTotal, 2);
-
-            $subtotal += $itemSubtotal;
-            $discounts += $itemDiscount;
-            $taxes += $itemTaxes;
-            $total += $itemTotal;
-        }
-
-        $quotation['subtotal'] = round($subtotal, 2);
-        $quotation['discounts'] = round($discounts, 2);
-        $quotation['taxes'] = round($taxes, 2);
-        $quotation['total'] = round($total, 2);
-
-        return $quotation;
-    }
-
     private function decodeJsonContent(string $content): mixed
     {
         $normalized = trim($content);
 
-        // La IA puede anteponer una explicación al JSON aunque el prompt
-        // indique que debe responder únicamente con la estructura.
         if (preg_match('/```(?:json)?\s*(.*?)\s*```/is', $normalized, $matches) === 1) {
             $normalized = trim($matches[1]);
         } else {
-            // Permite recuperar un JSON incrustado en una respuesta textual.
             $jsonStart = strpos($normalized, '{');
             $jsonEnd = strrpos($normalized, '}');
 
@@ -1149,102 +1290,151 @@ final readonly class ChatToolPdfMessageProcessor
             }
         }
 
-        $decoded = json_decode(trim($normalized), true);
+        $decoded = json_decode(trim($normalized), true, 512, JSON_INVALID_UTF8_SUBSTITUTE);
 
         return json_last_error() === JSON_ERROR_NONE ? $decoded : null;
     }
 
-    /**
-     * @return array<string, string>
-     */
-    private function normalizeParty(mixed $party, bool $includeContactPerson): array
+    private function truncateAiResponse(string $response, int $maxLength = 2000): string
     {
-        if (is_string($party)) {
-            $party = $this->decodeJsonContent($party);
+        $response = trim($response);
+
+        if (mb_strlen($response) <= $maxLength) {
+            return $response;
         }
 
-        if (!is_array($party)) {
-            $party = [];
-        }
+        return mb_substr($response, 0, $maxLength) . '...';
+    }
 
-        $normalized = [
-            'legal_name' => $this->normalizeString($party['legal_name'] ?? null),
-            'tax_id' => $this->normalizeString($party['tax_id'] ?? null),
-            'address' => $this->normalizeString($party['address'] ?? null),
-            'city' => $this->normalizeString($party['city'] ?? null),
-            'country' => $this->normalizeString($party['country'] ?? null),
-            'email' => $this->normalizeString($party['email'] ?? null),
-            'phone' => $this->normalizeString($party['phone'] ?? null),
+    private function dispatchResponse(
+        ChatToolPdfMessage $message,
+        ?string $content = null,
+        ?array $contentJson = null,
+        ?string $pdfUrl = null,
+        ?string $originalNameAttachment = null,
+        ?string $attachmentPath = null,
+        bool $isLocked = false,
+    ): void {
+        $this->logger->info('[=================inicio==========================]');
+        $resolvedContent = $content !== null && trim($content) !== ''
+            ? $content
+            : 'no tenemos servicio en este momento';
+        $resolvedAttachmentPath = $attachmentPath ?? $message->getAttachmentKey();
+        $publishedData = [
+            'chat_id' => $message->getChatId(),
+            'user_identifier' => $message->getUserIdentifier(),
+            'content' => $resolvedContent,
+            'content_json' => $contentJson,
+            'pdf_url' => $pdfUrl,
+            'mercure_topic' => $message->getMercureTopic(),
+            'original_name_attachment' => $originalNameAttachment,
+            'attachment_path' => $resolvedAttachmentPath,
+            'is_locked' => $isLocked,
+            'created_at' => $message->getCreatedAt()->format(\DateTimeInterface::ATOM),
         ];
 
-        if ($includeContactPerson) {
-            $normalized['contact_person'] = $this->normalizeString($party['contact_person'] ?? null);
+        $this->logger->info('[ChatToolPdfMessageProcessor] Payload completo a publicar.', $publishedData);
+        $consolePayload = json_encode($publishedData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (is_string($consolePayload)) {
+            fwrite(STDOUT, "[ChatToolPdfMessageProcessor] Payload completo a publicar: {$consolePayload}\n");
         }
 
-        return $normalized;
+        $this->persistAssistantResponse(
+            $message,
+            $resolvedContent,
+            $pdfUrl,
+            $originalNameAttachment,
+            $resolvedAttachmentPath,
+            $isLocked,
+            $contentJson,
+        );
+
+        $this->messageBus->dispatch(new ChatToolIAPdfResponse(
+            chatId: $message->getChatId(),
+            userIdentifier: $message->getUserIdentifier(),
+            content: $resolvedContent,
+            pdfUrl: $pdfUrl,
+            mercureTopic: $message->getMercureTopic(),
+            originalNameAttachment: $originalNameAttachment,
+            attachmentPath: $resolvedAttachmentPath,
+            isLocked: $isLocked,
+            createdAt: $message->getCreatedAt(),
+        ));
+        $this->logger->info('[=================fin==========================]');
     }
 
-    /**
-     * @return array<string, string>
-     */
-    private function normalizeCommercialTerms(mixed $terms): array
+    private function persistUserMessage(ChatToolPdfMessage $message, string $intent): void
     {
-        if (!is_array($terms)) {
-            $terms = [];
+        $history = new ChatHistoryPdf(
+            chatId: $message->getChatId(),
+            userIdentifier: $message->getUserIdentifier(),
+            recordType: 'user',
+            intent: $intent,
+            message: $message->getMessage(),
+            toolEnabled: $message->isToolEnabled(),
+            tenant: $message->getTenant(),
+            locale: $message->getLocale(),
+            session: $message->getSession(),
+            history: $message->getHistory(),
+            attachmentKey: $message->getAttachmentKey(),
+            mercureTopic: $message->getMercureTopic(),
+            createdAt: $message->getCreatedAt(),
+        );
+
+        $this->entityManager->persist($history);
+        $this->entityManager->flush();
+    }
+
+    private function persistAssistantResponse(
+        ChatToolPdfMessage $message,
+        string $content,
+        ?string $pdfUrl,
+        ?string $originalNameAttachment,
+        ?string $attachmentPath,
+        bool $isLocked = false,
+        ?array $contentJson = null,
+    ): void {
+        $history = new ChatHistoryPdf(
+            chatId: $message->getChatId(),
+            userIdentifier: $message->getUserIdentifier(),
+            recordType: 'assistant',
+            mercureTopic: $message->getMercureTopic(),
+            createdAt: $message->getCreatedAt(),
+            content: $content,
+            contentJson: $contentJson,
+            pdfUrl: $pdfUrl,
+            originalNameAttachment: $originalNameAttachment,
+            attachmentPath: $attachmentPath,
+            isLocked: $isLocked,
+        );
+
+        $this->entityManager->persist($history);
+        $this->entityManager->flush();
+    }
+
+    private function findLatestAttachmentKey(string $chatId, string $userIdentifier): ?string
+    {
+        $history = $this->entityManager->getRepository(ChatHistoryPdf::class)
+            ->createQueryBuilder('history')
+            ->andWhere('history.chatId = :chatId')
+            ->andWhere('history.userIdentifier = :userIdentifier')
+            ->andWhere('history.attachmentKey IS NOT NULL')
+            ->andWhere('history.attachmentKey <> :emptyAttachmentKey')
+            ->setParameter('chatId', $chatId)
+            ->setParameter('userIdentifier', $userIdentifier)
+            ->setParameter('emptyAttachmentKey', '')
+            ->orderBy('history.createdAt', 'DESC')
+            ->addOrderBy('history.id', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        if (!$history instanceof ChatHistoryPdf) {
+            return null;
         }
 
-        return [
-            'payment_method' => $this->normalizeString($terms['payment_method'] ?? null),
-            'payment_terms' => $this->normalizeString($terms['payment_terms'] ?? null),
-            'delivery_time' => $this->normalizeString($terms['delivery_time'] ?? null),
-            'warranty' => $this->normalizeString($terms['warranty'] ?? null),
-        ];
-    }
+        $attachmentKey = trim((string) $history->getAttachmentKey());
 
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function normalizeItems(mixed $items): array
-    {
-        if (!is_array($items)) {
-            return [];
-        }
-
-        return array_values(array_map(static function (mixed $item): array {
-            if (is_object($item)) {
-                $item = get_object_vars($item);
-            }
-
-            if (!is_array($item)) {
-                $item = [];
-            }
-
-            return [
-                'item_id' => (string) ($item['item_id'] ?? ''),
-                'description' => (string) ($item['description'] ?? ''),
-                'quantity' => is_numeric($item['quantity'] ?? null) ? (float) $item['quantity'] : 0,
-                'unit_price' => is_numeric($item['unit_price'] ?? null) ? (float) $item['unit_price'] : 0,
-                'discount_percentage' => is_numeric($item['discount_percentage'] ?? null) ? (float) $item['discount_percentage'] : 0,
-                'tax_percentage' => is_numeric($item['tax_percentage'] ?? null) ? (float) $item['tax_percentage'] : 0,
-                'subtotal' => is_numeric($item['subtotal'] ?? null) ? (float) $item['subtotal'] : 0,
-                'total' => is_numeric($item['total'] ?? null) ? (float) $item['total'] : 0,
-            ];
-        }, $items));
-    }
-
-    private function normalizeString(mixed $value): string
-    {
-        return is_scalar($value) ? trim((string) $value) : '';
-    }
-
-    private function normalizeNumber(mixed $value): int|float
-    {
-        if (!is_numeric($value)) {
-            return 0;
-        }
-
-        $number = (float) $value;
-
-        return floor($number) === $number ? (int) $number : $number;
+        return $attachmentKey !== '' ? $attachmentKey : null;
     }
 }

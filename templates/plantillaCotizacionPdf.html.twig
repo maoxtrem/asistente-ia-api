@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ document_meta.document_type|default('COTIZACIÓN') }} {{ document_meta.quote_number|default('') }}</title>
+
+    <style>
+        :root {
+            --navy: #143650;
+            --navy-2: #173e5b;
+            --teal: #1fa8a3;
+            --teal-dark: #138c87;
+            --ink: #263746;
+            --muted: #6f8091;
+            --line: #d5dfe7;
+            --soft: #f1f5f8;
+            --soft-teal: #eaf7f5;
+            --white: #ffffff;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: #e9eef2;
+            color: var(--ink);
+            font-family: Arial, Helvetica, sans-serif;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        body {
+            padding: 16px 0;
+        }
+
+        .quote-page {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            padding: 15mm 20mm 9mm;
+            overflow: hidden;
+            background: var(--white);
+            box-shadow: 0 8px 28px rgba(20, 54, 80, 0.16);
+        }
+
+        .top-accent {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 5.2mm;
+            background: linear-gradient(
+                90deg,
+                var(--teal) 0,
+                var(--teal) 27.2%,
+                var(--navy) 27.2%,
+                var(--navy) 100%
+            );
+        }
+
+        .document-header {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            align-items: start;
+            gap: 12mm;
+            margin-top: 5mm;
+            margin-bottom: 5.2mm;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 3.2mm;
+        }
+
+        .brand-mark {
+            flex: 0 0 auto;
+            width: 16.5mm;
+            height: 16.5mm;
+        }
+
+        .brand-copy {
+            line-height: 1;
+        }
+
+        .brand-name {
+            margin: 0 0 1.4mm;
+            color: var(--navy);
+            font-size: 20pt;
+            font-weight: 800;
+            letter-spacing: 0.4px;
+        }
+
+        .brand-division {
+            margin: 0 0 1.2mm;
+            color: var(--teal-dark);
+            font-size: 12.5pt;
+            font-weight: 800;
+            letter-spacing: 0.3px;
+        }
+
+        .brand-tagline {
+            margin: 0;
+            color: var(--muted);
+            font-size: 8.5pt;
+        }
+
+        .quote-heading {
+            text-align: right;
+        }
+
+        .quote-heading h1 {
+            margin: 0 0 1.2mm;
+            color: var(--navy);
+            font-size: 25pt;
+            font-weight: 800;
+            letter-spacing: 0.7px;
+            line-height: 1;
+        }
+
+        .quote-heading p {
+            margin: 0.5mm 0;
+            font-size: 9.2pt;
+            line-height: 1.16;
+        }
+
+        .party-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            margin-bottom: 5mm;
+            border: 1px solid var(--line);
+        }
+
+        .party-card {
+            min-height: 27mm;
+            padding: 4mm 4.2mm 3.5mm;
+            background: var(--soft);
+        }
+
+        .party-card + .party-card {
+            border-left: 1px solid var(--line);
+            background: var(--soft-teal);
+        }
+
+        .party-card h2 {
+            margin: 0 0 1.2mm;
+            color: var(--teal-dark);
+            font-size: 8.7pt;
+            font-weight: 800;
+            letter-spacing: 0.25px;
+            text-transform: uppercase;
+        }
+
+        .party-card p {
+            margin: 0.45mm 0;
+            font-size: 8.8pt;
+            line-height: 1.16;
+        }
+
+        .section-title {
+            margin: 0 0 2mm;
+            color: var(--navy);
+            font-size: 10.2pt;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            text-transform: uppercase;
+        }
+
+        .items-table,
+        .conditions-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .items-table {
+            margin-bottom: 4.3mm;
+            font-size: 8.4pt;
+        }
+
+        .items-table col.item-number { width: 6%; }
+        .items-table col.description { width: 44%; }
+        .items-table col.unit { width: 11%; }
+        .items-table col.quantity { width: 10%; }
+        .items-table col.unit-price { width: 14.5%; }
+        .items-table col.line-total { width: 14.5%; }
+
+        .items-table thead {
+            display: table-header-group;
+        }
+
+        .items-table th {
+            padding: 2.4mm 2.4mm;
+            border: 1px solid var(--navy);
+            background: var(--navy);
+            color: var(--white);
+            font-weight: 800;
+            text-align: left;
+        }
+
+        .items-table td {
+            padding: 1.8mm 2.4mm;
+            border: 1px solid var(--line);
+            line-height: 1.15;
+            vertical-align: middle;
+        }
+
+        .items-table tbody tr:nth-child(even) td {
+            background: var(--soft);
+        }
+
+        .items-table tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .items-table .center {
+            text-align: center;
+        }
+
+        .items-table .number {
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .empty-row td {
+            padding: 8mm 3mm;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.22fr) minmax(59mm, 0.78fr);
+            align-items: start;
+            gap: 7mm;
+            margin-bottom: 5.3mm;
+        }
+
+        .notes-block {
+            padding-top: 0.5mm;
+        }
+
+        .note {
+            margin-bottom: 3mm;
+        }
+
+        .note:last-child {
+            margin-bottom: 0;
+        }
+
+        .note h3 {
+            margin: 0 0 0.7mm;
+            color: var(--teal-dark);
+            font-size: 8.4pt;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            text-transform: uppercase;
+        }
+
+        .note p {
+            margin: 0;
+            font-size: 8.2pt;
+            line-height: 1.22;
+        }
+
+        .totals-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9pt;
+        }
+
+        .totals-table td {
+            padding: 3mm 3.2mm;
+            border: 1px solid var(--line);
+            background: var(--soft);
+        }
+
+        .totals-table td:last-child {
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .totals-table .grand-total td {
+            border-color: var(--teal-dark);
+            background: var(--teal-dark);
+            color: var(--white);
+            font-size: 11pt;
+            font-weight: 800;
+        }
+
+        .conditions-section {
+            margin-bottom: 5mm;
+        }
+
+        .conditions-table {
+            font-size: 8.2pt;
+        }
+
+        .conditions-table col.label { width: 17%; }
+        .conditions-table col.value { width: 33%; }
+
+        .conditions-table th,
+        .conditions-table td {
+            padding: 2.8mm 3mm;
+            border: 1px solid var(--line);
+            background: var(--soft);
+            line-height: 1.18;
+            vertical-align: middle;
+        }
+
+        .conditions-table th {
+            color: var(--teal-dark);
+            font-weight: 800;
+            text-align: left;
+            text-transform: uppercase;
+        }
+
+        .closing {
+            display: grid;
+            grid-template-columns: 1.1fr 0.9fr;
+            gap: 10mm;
+            align-items: start;
+            margin-bottom: 5mm;
+        }
+
+        .closing p {
+            margin: 0.5mm 0;
+            font-size: 8.6pt;
+            line-height: 1.2;
+        }
+
+        .closing .thanks {
+            color: var(--navy);
+            font-size: 10pt;
+            font-weight: 800;
+        }
+
+        .closing .contact {
+            text-align: right;
+        }
+
+        .document-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8mm;
+            margin-top: auto;
+            padding-top: 3mm;
+            border-top: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 7.8pt;
+        }
+
+        .document-footer span:last-child {
+            white-space: nowrap;
+        }
+
+        @media screen and (max-width: 900px) {
+            body {
+                padding: 0;
+            }
+
+            .quote-page {
+                width: 100%;
+                min-height: auto;
+                padding: 24px;
+                box-shadow: none;
+            }
+
+            .document-header,
+            .party-grid,
+            .summary-grid,
+            .closing {
+                grid-template-columns: 1fr;
+            }
+
+            .quote-heading,
+            .closing .contact {
+                text-align: left;
+            }
+
+            .party-card + .party-card {
+                border-left: 0;
+                border-top: 1px solid var(--line);
+            }
+
+            .items-scroll {
+                overflow-x: auto;
+            }
+
+            .items-table {
+                min-width: 760px;
+            }
+        }
+
+        @page {
+            size: A4 portrait;
+            margin: 0;
+        }
+
+        @media print {
+            html,
+            body {
+                width: 210mm;
+                min-height: 297mm;
+                background: var(--white);
+            }
+
+            body {
+                padding: 0;
+            }
+
+            .quote-page {
+                width: 210mm;
+                min-height: 297mm;
+                margin: 0;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<main class="quote-page">
+    <div class="top-accent" aria-hidden="true"></div>
+
+    <header class="document-header">
+        <section class="brand" aria-label="{{ provider.company_name|default('') }}">
+            <svg class="brand-mark" viewBox="0 0 100 100" role="img" aria-label="{{ provider.company_name|default('Proveedor') }}">
+                <rect x="3" y="3" width="94" height="94" rx="20" fill="#143650"/>
+                <rect x="47" y="17" width="37" height="18" rx="7" fill="#1fa8a3"/>
+                <rect x="21" y="43" width="38" height="18" rx="6" fill="#ffffff"/>
+                <rect x="21" y="68" width="63" height="17" rx="7" fill="#1fa8a3"/>
+            </svg>
+
+            <div class="brand-copy">
+                <p class="brand-name">{{ provider.company_name|default('') }}</p>
+                <p class="brand-tagline">{{ provider.slogan|default('') }}</p>
+            </div>
+        </section>
+
+        <section class="quote-heading">
+            <h1>{{ document_meta.document_type|default('COTIZACIÓN') }}</h1>
+            <p>No. {{ document_meta.quote_number|default('') }}</p>
+            <p>Fecha: {{ document_meta.issue_date|default('') }}</p>
+            <p>Válida hasta: {{ document_meta.valid_until_date|default('') }}</p>
+        </section>
+    </header>
+
+    <section class="party-grid">
+        <article class="party-card">
+            <h2>Proveedor</h2>
+            <p>{{ provider.company_name|default('') }}</p>
+            <p>{{ provider.tax_id|default('') }}</p>
+            <p>{{ provider.address|default('') }}</p>
+            <p>{{ provider.email|default('') }}</p>
+            <p>{{ provider.phone|default('') }}</p>
+        </article>
+
+        <article class="party-card">
+            <h2>Cliente</h2>
+            <p>{{ client.company_name|default('') }}</p>
+            <p>{{ client.tax_id|default('') }}</p>
+            <p>{{ client.attention_to|default('') }}</p>
+            <p>{{ client.project_name|default('') }}</p>
+        </article>
+    </section>
+
+    <section>
+        <h2 class="section-title">Detalle de productos y servicios</h2>
+
+        <div class="items-scroll">
+            <table class="items-table">
+                <colgroup>
+                    <col class="item-number">
+                    <col class="description">
+                    <col class="unit">
+                    <col class="quantity">
+                    <col class="unit-price">
+                    <col class="line-total">
+                </colgroup>
+                <thead>
+                <tr>
+                    <th class="center">#</th>
+                    <th>Descripción</th>
+                    <th class="center">Unidad</th>
+                    <th class="center">Cant.</th>
+                    <th class="number">V. unitario</th>
+                    <th class="number">Total</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for item in items %}
+                    <tr>
+                        <td class="center">{{ item.item_id|default(loop.index) }}</td>
+                        <td>{{ item.description|default('') }}</td>
+                        <td class="center">{{ item.unit|default('') }}</td>
+                        <td class="center">{{ item.quantity|default(0)|number_format(2, ',', '.') }}</td>
+                        <td class="number">{{ item.unit_price|default(0)|number_format(2, ',', '.') }}</td>
+                        <td class="number">{{ item.total_line|default(0)|number_format(2, ',', '.') }}</td>
+                    </tr>
+                {% else %}
+                    <tr class="empty-row">
+                        <td colspan="6">No se han agregado artículos a la cotización.</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="summary-grid">
+        <div class="notes-block">
+            <article class="note">
+                <h3>Incluye</h3>
+                <p>{{ additional_info.includes|default('') }}</p>
+            </article>
+
+            <article class="note">
+                <h3>Observación</h3>
+                <p>{{ additional_info.observations|default('') }}</p>
+            </article>
+        </div>
+
+        <table class="totals-table" aria-label="Totales de la cotización">
+            <tbody>
+            <tr>
+                <td>Subtotal</td>
+                <td>{{ totals.subtotal|default(0)|number_format(2, ',', '.') }}</td>
+            </tr>
+            {% for tax in totals.taxes|default([]) %}
+                <tr>
+                    <td>{{ tax.tax_name|default('Impuesto') }} ({{ tax.tax_percentage|default(0) }} %)</td>
+                    <td>{{ tax.tax_amount|default(0)|number_format(2, ',', '.') }}</td>
+                </tr>
+            {% endfor %}
+            {% if totals.taxes|default([])|length > 1 %}
+                <tr>
+                    <td>Total impuestos</td>
+                    <td>{{ totals.total_taxes|default(0)|number_format(2, ',', '.') }}</td>
+                </tr>
+            {% endif %}
+            <tr class="grand-total">
+                <td>TOTAL</td>
+                <td>{{ totals.grand_total|default(0)|number_format(2, ',', '.') }}</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="conditions-section">
+        <h2 class="section-title">Condiciones comerciales</h2>
+
+        <table class="conditions-table">
+            <colgroup>
+                <col class="label">
+                <col class="value">
+                <col class="label">
+                <col class="value">
+            </colgroup>
+            <tbody>
+            <tr>
+                <th>Forma de pago</th>
+                <td>{{ commercial_conditions.payment_method|default('') }}</td>
+                <th>Tiempo de entrega</th>
+                <td>{{ commercial_conditions.delivery_time|default('') }}</td>
+            </tr>
+            <tr>
+                <th>Validez</th>
+                <td>{{ commercial_conditions.validity|default('') }}</td>
+                <th>Garantía</th>
+                <td>{{ commercial_conditions.warranty|default('') }}</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="closing">
+        <div>
+            <p class="thanks">{{ footer.message|default('') }}</p>
+            <p>{{ footer.seller.name|default('') }}{% if footer.seller.role|default('') %} - {{ footer.seller.role }}{% endif %}</p>
+        </div>
+
+        <div class="contact">
+            <p>Contacto: {{ footer.contact.email|default('') }}</p>
+            <p>{{ footer.contact.phone|default('') }}{% if footer.contact.location|default('') %} | {{ footer.contact.location }}{% endif %}</p>
+        </div>
+    </section>
+
+    <footer class="document-footer">
+        <span>Página 1</span>
+    </footer>
+</main>
+</body>
+</html>
