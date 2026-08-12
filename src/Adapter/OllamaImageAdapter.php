@@ -65,6 +65,41 @@ final readonly class OllamaImageAdapter
         return $responseContent;
     }
 
+    public function analyzeTextWithOllama(
+        string $systemPrompt,
+        string $userPrompt,
+    ): string {
+        $result = $this->platform->invoke($this->model, [
+            'model' => $this->model,
+            'stream' => false,
+            'format' => 'json',
+            'options' => [
+                'num_ctx' => 16384,
+                'temperature' => 0,
+                'num_predict' => 8192,
+                'repeat_penalty' => 1.15,
+                'repeat_last_n' => 256,
+            ],
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => $systemPrompt,
+                ],
+                [
+                    'role' => 'user',
+                    'content' => $userPrompt,
+                ],
+            ],
+        ])->getResult();
+
+        $responseContent = $result->getContent();
+        if (!is_string($responseContent)) {
+            throw new \RuntimeException('Ollama no devolvió contenido de texto para el análisis final.');
+        }
+
+        return $responseContent;
+    }
+
     private function resizeImageForOllama(
         string $imageBinary,
         int $maxDimension = 1500,

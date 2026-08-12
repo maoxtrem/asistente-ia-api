@@ -145,7 +145,116 @@ final readonly class ChatToolPdfMessageProcessor
             $this->processImageWithAi($message, $image);
         }
 
-        $this->dispatchResponse($message, "analizare el documento");
+        $this->generateFinalDocumentAnalysis($message, $attachmentZipKey);
+    }
+
+    private function generateFinalDocumentAnalysis(
+        ChatToolPdfMessage $message,
+        string $attachmentZipKey,
+    ): void {
+        try {
+            $history = $this->findHistoryByAttachmentZipKey($message, $attachmentZipKey);
+            $images = $this->findStoredImages($history);
+            $pages = [];
+
+            foreach ($images as $image) {
+                if (
+                    $image->getApproved() !== true
+                    || $image->getContextGeneralAnalyzed() !== true
+                    || $image->getMaterialsSystemsAnalyzed() !== true
+                    || $image->getGeometryQuantitiesAnalyzed() !== true
+                ) {
+                    continue;
+                }
+
+                $pages[] = [
+                    'page' => $image->getImageNumber(),
+                    'image_name' => $image->getImageName(),
+                    'document_type' => $image->getDocumentType(),
+                    'preliminary_review' => [
+                        'approved' => $image->getApproved(),
+                        'confidence_score' => $image->getConfidenceScore(),
+                        'reasoning' => $image->getReasoning(),
+                    ],
+                    'context_general' => $image->getContextGeneraJson(),
+                    'materials_systems' => $image->getMaterialsSystemsJson(),
+                    'geometry_quantities' => $image->getGeometryQuantitiesJson(),
+                ];
+            }
+
+            if ($pages === []) {
+                $this->dispatchResponse($message, 'No fue posible generar el análisis final porque ninguna página completó todas las fases.');
+                return;
+            }
+
+            $documentData = [
+                'chat_id' => $message->getChatId(),
+                'attachment_zip_key' => $attachmentZipKey,
+                'pages' => $pages,
+            ];
+            $encodedDocumentData = json_encode(
+                $documentData,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+            );
+
+            if (!is_string($encodedDocumentData)) {
+                throw new \RuntimeException('No fue posible serializar los datos del análisis final.');
+            }
+
+            $finalSystemPrompt = $this->loadPrompt('document_analysis_final_system_prompt.md');
+            $finalUserPrompt = "Genera el documento final usando exclusivamente los datos analizados por página que se indican a continuación. El content_json debe respetar exactamente la estructura definida en este prompt para que pueda ser procesado por la plantilla PDF.\n\n{$encodedDocumentData}";
+
+            // Ollama es la ruta activa para el análisis final.
+            $rawResponse = trim($this->ollamaImageAdapter->analyzeTextWithOllama(
+                $finalSystemPrompt,
+                $finalUserPrompt,
+            ));
+
+            // Para usar OpenAI, comenta el bloque anterior y habilita estas líneas:
+            // $agent = new Agent($this->platform, $this->model);
+            // $response = $agent->call(new MessageBag(
+            //     new SystemMessage($finalSystemPrompt),
+            //     new UserMessage(new Text($finalUserPrompt)),
+            // ));
+            // $rawResponse = trim((string) $response->getContent());
+            $decodedResponse = $this->decodeJsonContent($rawResponse);
+
+            if (!is_array($decodedResponse)) {
+                throw new \RuntimeException(sprintf(
+                    'La IA no devolvió un JSON válido para el análisis final. Error JSON: %s. Respuesta: %s',
+                    json_last_error_msg(),
+                    $this->truncateAiResponse($rawResponse),
+                ));
+            }
+
+            $content = trim((string) ($decodedResponse['content'] ?? 'Análisis final completado.'));
+            $accionRequerida = $decodedResponse['accion_requerida'] ?? 'render_pdf';
+            $contentJson = is_array($decodedResponse['content_json'] ?? null)
+                ? $decodedResponse['content_json']
+                : null;
+            $pdfUrl = null;
+
+            if ($accionRequerida === 'render_pdf' && $contentJson !== null) {
+                $pdfUrl = $this->renderAndStoreQuotationPdf(
+                    $contentJson,
+                    $message->getChatId(),
+                );
+            }
+
+            $this->dispatchResponse(
+                message: $message,
+                content: $content,
+                contentJson: $contentJson,
+                pdfUrl: $pdfUrl,
+            );
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] No fue posible generar el análisis final del documento.', [
+                'chat_id' => $message->getChatId(),
+                'attachment_zip_key' => $attachmentZipKey,
+                'error' => $exception->getMessage(),
+            ]);
+            $this->dispatchResponse($message, 'No fue posible completar el análisis final del documento.');
+        }
     }
 
     private function convertAndStoreAttachmentZip(
@@ -852,7 +961,7 @@ final readonly class ChatToolPdfMessageProcessor
         ?string $imagePath,
         string $imageBinary,
     ): string {
-        // Ollama es la ruta activa para las pruebas actuales.
+        // Ollama es la ruta activa para las fases de análisis de imágenes.
         return $this->ollamaImageAdapter->analyzeImageWithOllama(
             $systemPrompt,
             $userPrompt,
