@@ -28,6 +28,8 @@ parameters:
     app.chattoolpdf_max_image_analyses: "%env(int:CHATTOOLPDF_MAX_IMAGE_ANALYSES)%"
     app.chattoolpdf_image_reevaluation_index: "%env(int:CHATTOOLPDF_IMAGE_REEVALUATION_INDEX)%"
     app.stirling_pdf_endpoint: "%env(string:STIRLING_PDF_ENDPOINT)%"
+    app.document_extraction_endpoint: "%env(string:DOCUMENT_EXTRACTION_ENDPOINT)%"
+    app.chattoolpdf_document_extraction_test: "%env(bool:CHATTOOLPDF_DOCUMENT_EXTRACTION_TEST)%"
     app.gotenberg_endpoint: "%env(string:GOTENBERG_ENDPOINT)%"
     app.tika_url: "%env(string:TIKA_URL)%"
     app.canvas_image_environment: "%env(string:CANVAS_IMAGE_ENVIRONMENT)%"

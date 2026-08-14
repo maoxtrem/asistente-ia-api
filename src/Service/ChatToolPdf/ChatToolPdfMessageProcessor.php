@@ -54,6 +54,10 @@ final readonly class ChatToolPdfMessageProcessor
         private string $stirlingEndpoint,
         #[Autowire(service: 'ai.platform.ollama')]
         private PlatformInterface $platform,
+        #[Autowire(service: 'ai.platform.openai')]
+        private PlatformInterface $openAiPlatform,
+        #[Autowire('%app.chat_model%')]
+        private string $openAiModel,
         private PromptLoader $promptLoader,
         #[Autowire(service: 'chattoolpdf.storage.attach_pdf')]
         private FilesystemOperator $attachPdfStorage,
@@ -61,6 +65,9 @@ final readonly class ChatToolPdfMessageProcessor
         private FilesystemOperator $chattoolpdfZipStorage,
         private Environment $twig,
         private OllamaImageAdapter $ollamaImageAdapter,
+        private PlanoOcrOrchestrator $planoOcrOrchestrator,
+        #[Autowire('%app.chattoolpdf_document_extraction_test%')]
+        private bool $documentExtractionTest,
     ) {}
 
     // Flujo principal: recibe el mensaje, obtiene la intención y deriva la ejecución.
@@ -118,9 +125,9 @@ final readonly class ChatToolPdfMessageProcessor
         // =================================================================
         // EJECUCIÓN VALIDADA
         // =================================================================
-               $this->logger->warning('[EJECUCIÓN VALIDADA] Respuesta de la ia intenciones', [
-                   $intent
-                ]);
+        $this->logger->warning('[EJECUCIÓN VALIDADA] Respuesta de la ia intenciones', [
+            $intent
+        ]);
         match ($intent) {
             self::INTENT_ANALYZE_DOCUMENT => $this->analyzeDocument($message, $activeAttachmentKey),
             self::INTENT_CREATE_DOCUMENT  => $this->createDocument($message),
@@ -133,6 +140,9 @@ final readonly class ChatToolPdfMessageProcessor
 
     private function analyzeDocument(ChatToolPdfMessage $message, string $attachmentKey): void
     {
+
+
+  
         $attachmentZipKey = $this->convertAndStoreAttachmentZip($message, $attachmentKey);
 
         if ($attachmentZipKey === null) {
@@ -179,6 +189,7 @@ final readonly class ChatToolPdfMessageProcessor
                     'context_general' => $image->getContextGeneraJson(),
                     'materials_systems' => $image->getMaterialsSystemsJson(),
                     'geometry_quantities' => $image->getGeometryQuantitiesJson(),
+                    'docling' => $image->getDoclingJson(),
                 ];
             }
 
@@ -417,8 +428,7 @@ final readonly class ChatToolPdfMessageProcessor
     private function areStoredImagesAvailable(
         array $storedImages,
         ?int $zipImageCount,
-    ): bool
-    {
+    ): bool {
         if ($storedImages === []) {
             return false;
         }
@@ -609,6 +619,54 @@ final readonly class ChatToolPdfMessageProcessor
             return;
         }
 
+        try {
+            $ocrRawArray = $image->getContextGeneraJson();
+
+            if ($ocrRawArray !== null) {
+                $this->logger->info('[ChatToolPdfMessageProcessor] Se reutiliza el context general JSON existente; se omite OCR.', $this->imageLogContext($message, $image));
+            } else {
+                // 1. Leer el binario desde el storage de imágenes.
+                $imageBinary = $this->chattoolpdfZipStorage->read($image->getImageKey());
+                if ($imageBinary === '') {
+                    throw new \RuntimeException('No fue posible leer la imagen desde el storage.');
+                }
+
+                // 2. Delegar el fraccionamiento y OCR al orquestador.
+                $ocrRawArray = $this->planoOcrOrchestrator->processImageToOcrArray(
+                    $imageBinary,
+                    $image->getImageName(),
+                );
+            }
+
+            if ($ocrRawArray === []) {
+                $this->logger->warning('[ChatToolPdfMessageProcessor] No se detectó texto en la imagen.', $this->imageLogContext($message, $image));
+            } else {
+                // Guardar el resultado OCR como array, no como string JSON.
+                $image->setContextGeneraJson($ocrRawArray);
+                // 3. Estructurar la lectura OCR mediante el agente de OpenAI.
+                $jsonEstructurado = $this->analyzeOcrArrayWithAgent(
+                    $this->loadPrompt('llm_structuring_system_prompt.md'),
+                    $ocrRawArray,
+                );
+                $structuredData = $this->decodeJsonContent($jsonEstructurado);
+
+                if (!is_array($structuredData)) {
+                    throw new \RuntimeException('El LLM no devolvió un JSON estructurado válido.');
+                }
+
+                // Se conserva en el campo JSON existente para el resultado documental.
+                $image->setGeometryQuantitiesJson($structuredData);
+                $this->entityManager->persist($image);
+                $this->entityManager->flush();
+            }
+        } catch (\Throwable $exception) {
+            $this->logger->error('[ChatToolPdfMessageProcessor] Error procesando imagen con OCR.', $this->imageLogContext($message, $image) + [
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        return;
+        
         if ($image->getContextGeneralAnalyzed() !== true) {
             if (!$this->runContextGeneralExtraction($message, $image)) {
                 return;
@@ -989,6 +1047,29 @@ final readonly class ChatToolPdfMessageProcessor
         return (string) $response->getContent();
     }
 
+    /**
+     * @param array<int, mixed> $ocrArray
+     */
+    private function analyzeOcrArrayWithAgent(
+        string $systemPrompt,
+        array $ocrArray,
+    ): string {
+        $ocrJson = json_encode(
+            ['lectura_visual' => $ocrArray],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+        );
+
+        $agent = new Agent($this->openAiPlatform, $this->openAiModel);
+        $response = $agent->call(new MessageBag(
+            new SystemMessage($systemPrompt),
+            new UserMessage(new Text(
+                "Estructura estos datos extraídos del plano:\n" . $ocrJson,
+            )),
+        ));
+
+        return (string) $response->getContent();
+    }
+
     private function processImage(
         ChatToolPdfMessage $message,
         ChatHistoryPdf $history,
@@ -1067,10 +1148,10 @@ final readonly class ChatToolPdfMessageProcessor
             $agent = new Agent($this->platform, $this->model);
             $response = $agent->call(new MessageBag(...$messages));
             $rawResponse = trim((string) $response->getContent());
-                $this->logger->warning('[ChatToolPdfMessageProcessor] Respuesta pura de la ia', [
-                    $rawResponse,
-                    $messages
-                ]);
+            $this->logger->warning('[ChatToolPdfMessageProcessor] Respuesta pura de la ia', [
+                $rawResponse,
+                $messages
+            ]);
             // 6. Decodificar la respuesta estructurada
             $decodedResponse = $this->decodeJsonContent($rawResponse);
 
@@ -1349,7 +1430,7 @@ final readonly class ChatToolPdfMessageProcessor
      *
      * @return array<string, mixed>|null
      */
-   private function findLatestContentJson(string $chatId, string $userIdentifier): ?array
+    private function findLatestContentJson(string $chatId, string $userIdentifier): ?array
     {
         $chatId = trim($chatId);
         $userIdentifier = trim($userIdentifier);

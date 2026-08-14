@@ -58,6 +58,9 @@ class ChatHistoryPdfImage
     #[ORM\Column(name: 'geometry_quantities_json', type: 'json', nullable: true)]
     private ?array $geometryQuantitiesJson = null;
 
+    #[ORM\Column(name: 'docling_json', type: 'json', nullable: true)]
+    private ?array $doclingJson = null;
+
     #[ORM\Column(name: 'confidence_score', type: 'integer', nullable: true)]
     private ?int $confidenceScore = null;
 
@@ -208,6 +211,22 @@ class ChatHistoryPdfImage
     public function setGeometryQuantitiesJson(?array $geometryQuantitiesJson): void
     {
         $this->geometryQuantitiesJson = $geometryQuantitiesJson;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function getDoclingJson(): ?array
+    {
+        return $this->doclingJson;
+    }
+
+    /**
+     * @param array<string, mixed>|null $doclingJson
+     */
+    public function setDoclingJson(?array $doclingJson): void
+    {
+        $this->doclingJson = $doclingJson;
     }
 
     public function getConfidenceScore(): ?int

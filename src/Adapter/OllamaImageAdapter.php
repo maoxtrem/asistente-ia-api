@@ -100,6 +100,27 @@ final readonly class OllamaImageAdapter
         return $responseContent;
     }
 
+    /**
+     * Envía al modelo el resultado estructurado del OCR como texto JSON.
+     *
+     * @param array<int, mixed> $ocrArray
+     */
+    public function analyzeOcrArrayWithOllama(
+        string $systemPrompt,
+        array $ocrArray,
+        string $instruction = 'Estructura estos datos extraídos del plano:',
+    ): string {
+        $ocrJson = json_encode(
+            ['lectura_visual' => $ocrArray],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+        );
+
+        return $this->analyzeTextWithOllama(
+            $systemPrompt,
+            $instruction . "\n" . $ocrJson,
+        );
+    }
+
     private function resizeImageForOllama(
         string $imageBinary,
         int $maxDimension = 1500,
